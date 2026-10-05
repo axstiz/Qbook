@@ -1,0 +1,27 @@
+[package]
+name = "qbook"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Terminal reader for EPUB/text with synchronised translation switching"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+dirs = "7"
+quick-xml = "0.42"
+ratatui = "0.30"
+rusqlite = { version = "0.40", features = ["bundled"] }
+scraper = "0.27"
+thiserror = "2"
+unicode-segmentation = "1"
+unicode-width = "0.2"
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"

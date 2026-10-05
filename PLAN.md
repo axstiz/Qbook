@@ -1,0 +1,225 @@
+# Qbook — план проекта
+
+Терминальная читалка (ratatui) для EPUB и текста с синхронным переключением языка,
+закладками и библиотекой-полкой.
+
+## 1. Ключевая идея
+
+Позиция в тексте **никогда** не хранится как номер строки. Она хранится как семантический
+якорь в координатах **базового** документа:
+
+```rust
+struct Anchor { block: usize, frac: f32 }  // индекс абзаца в оригинале + доля внутри него
+```
+
+Перевод — это не отдельная «книга», а **вариант отображения** того же документа плюс карта
+выравнивания абзацев. Смена языка = перевести якорь через карту и перерисовать, удержав ту
+же строку на том же месте экрана.
+
+Следствие: закладки, прогресс и «последнее чтение» хранятся один раз в базовых координатах,
+и смена языка их не ломает.
+
+## 2. Модель данных
+
+```rust
+enum BlockKind { Heading(u8), Paragraph, Quote, ListItem, Code, Verse, Rule, Blank }
+
+struct Block { kind: BlockKind, text: String }          // text без трейлинга
+struct Document { lang: String, title: String, blocks: Vec<Block>, toc: Vec<TocItem>, total_chars: usize }
+
+struct Variant { lang: String, doc: Document, align: Alignment }
+
+struct Alignment {
+    base_to_var: Vec<Option<usize>>,     // якорь базы -> блок варианта
+    var_to_base: HashMap<usize, usize>,  // обратная карта (для ru->en)
+    coverage: f32,                       // доля сопоставленных блоков
+}
+```
+
+## 3. Раскладка и экран
+
+```rust
+struct LineInfo { block: usize, line_in_block: usize, start_char: usize, end_char: usize }
+struct Layout { width: u16, lines: Vec<LineInfo>, block_range: Vec<Range<usize>> }
+```
+
+- Перенос по `unicode-width` + `unicode-segmentation` (графемы), без разрыва слов,
+  но с переносом по дефису и слэшу.
+- Все индексы — **в символах, не в байтах** (иначе сломается на кириллице и эмодзи).
+- `Layout` кэшируется по `(variant_id, width)`.
+
+Переходы: `scroll_line → Anchor` и `Anchor → scroll_line` (binary search по `start_char` +
+учёт строки-заголовка блока, чтобы абзац оставался на той же высоте экрана).
+
+## 4. Выравнивание (banded Needleman–Wunsch)
+
+Перевод — второй прогон того же источника, поэтому блоки почти совпадают 1:1, но разбивка на
+абзацы может разойтись.
+
+**Быстрый путь (O(n))**: если `n_base == n_var` и ≥ 90 % позиций совпадают по `kind` и по
+лог-длине — берём тождественную карту. Покрывает ~все реальные случаи, DP не запускается.
+
+**DP-путь**: полоса вокруг диагонали `|j − i·m/n| ≤ max(64, n/8)`, стоимости:
+
+```
+ratio      = total_len_var / total_len_base
+sub(i,j)   = 0.5·|ln(1+n_a·ratio) − ln(1+n_b)|/ln2     // длина
+           + 0.3·min(1, |sent_a − sent_b| / 3)          // число предложений
+           + 0.2·0.6·[is_heading_a ≠ is_heading_b]      // тип блока
+gap_open = 0.9,  gap_extend = 0.3     // высокий штраф: алгоритм предпочитает 1:1
+```
+
+**Фолбэк**, если блок не сопоставлен: пропорциональный индекс `round(frac_global · n_var)`,
+затем «липкий» поиск ближайшего сопоставленного соседа. В статус-баре появляется
+предупреждение о качестве выравнивания.
+
+Результат кэшируется в SQLite по ключу `(book_id, lang, base_hash, var_hash)` — при
+неизменных файлах пересчёта нет.
+
+## 5. Разбор форматов
+
+**TXT / MD**: абзацы по пустой строке; `#` → Heading (уровень по числу `#`); `>` → Quote;
+`-`/`*`/`1.` → ListItem; `---` → Rule; 4 пробела → Code; блок строк с одинаковым глубоким
+отступом → Verse.
+
+**EPUB** (`zip` + `scraper`/html5ever + `quick-xml`):
+
+1. `META-INF/container.xml` → путь OPF
+2. OPF: `dc:title`, `dc:language`, manifest, **spine** — текст строго в порядке spine
+3. Каждый spine-item → HTML5-парс → обход дерева: `p`, `h1–h6`, `li`, `blockquote`, `pre`,
+   `div`, `br` (перенос строки внутри блока), `td` (стихи). Выкидываем `script`, `style`, `head`.
+4. TOC из `nav` (EPUB3) с фолбэком на `ncx/navPoint` (EPUB2) — данные собираем сразу,
+   панель оглавления в v1 не показываем.
+
+Единый трейт `Source { fn load(path) -> Result<Document> }` + `detect_format` по расширению
+и magic bytes (`PK\x03\x04`).
+
+## 6. Хранилище (SQLite, XDG data dir)
+
+```sql
+books(id, path UNIQUE, title, base_lang, added_at, last_opened_at, mtime, size)
+variants(id, book_id→CASCADE, lang, path, kind, UNIQUE(book_id,lang))
+progress(book_id PK, anchor_block, anchor_frac, variant_lang, updated_at)
+bookmarks(id, book_id→CASCADE, anchor_block, anchor_frac, label, created_at)
+alignments(book_id, lang, base_hash, var_hash, map BLOB, coverage, PK(book_id,lang))
+```
+
+## 7. Экраны и клавиши
+
+**Экраны**: `Reader` · `Shelf` (полка) · оверлеи `Toc` / `Bookmarks` · `Prompt` (ввод пути) ·
+`Help`.
+
+```
+j/k ↓/↑ Space/b  Ctrl+D/U  PgDn/PgUp  g/G     — навигация
+L / Shift+L                                      — след./пред. язык (с сохранением позиции)
+1..9                                             — выбрать вариант по номеру
+b  — поставить закладку      B — список закладок   n/p — след./пред. закладка
+D — удалить закладку        l — полка              a — добавить книгу (prompt)
+[ / ]  — уже/шире колонка  ?  — помощь            q — выход
+```
+
+Статус-бар: заголовок · `[EN ▸ RU]` · `12.4 %` · `блок 412/3300` · метка закладки ·
+индикатор качества выравнивания.
+
+Привязка переводов: CLI-флаг `--variant ru=path.ru.epub` (можно повторять) + автопоиск
+сайдкаров `книга.<lang>.{epub,txt,md}` рядом с оригиналом + докирка из приложения клавишей `a`.
+
+## 8. Зависимости
+
+`ratatui 0.30` (crossterm backend) · `crossterm 0.29` · `clap 4` (derive) ·
+`rusqlite 0.40` (bundled) · `zip 8.6` (deflate) · `scraper 0.27` + `html5ever 0.39` ·
+`quick-xml 0.42` · `unicode-width 0.2` · `unicode-segmentation 1.13` · `anyhow` ·
+`thiserror 2` · `dirs 7` · `tempfile` (dev, генерация тестовых EPUB).
+
+## 9. Метрики приёмки
+
+| #  | Метрика                                                                 | Порог                                    |
+|----|------------------------------------------------------------------------|------------------------------------------|
+| M1 | Медиана \|Δ block\| после смены языка на эталонной паре               | **0**; несопоставленных блоков **≤ 5 %** |
+| M2 | Открытие книги на 3000 блоков (парсинг + выравнивание)                  | **< 500 мс**                             |
+| M3 | Переключение языка без I/O (кэш выравнивания + раскладка)              | **< 50 мс**                              |
+| M4 | Round-trip `scroll → Anchor → scroll`                                  | тот же блок; расхождение ≤ 1 строки      |
+| M5 | `cargo test` и `cargo clippy -- -D warnings`                            | зелёные, 0 предупреждений                |
+
+## 10. Структура
+
+```
+src/
+  main.rs        cli.rs        app.rs        event.rs
+  model/  document.rs  layout.rs  position.rs
+  parse/  mod.rs  txt.rs  epub.rs
+  align/ mod.rs              # признаки + banded NW
+  store/  mod.rs              # миграции + репозиторий
+  ui/    reader.rs  shelf.rs  panels.rs  help.rs
+tests/  align.rs  position.rs  epub_parse.rs  lang_switch.rs
+flake.nix
+```
+
+---
+
+## TODO
+
+### Блок 1 — каркас
+
+1. `flake.nix` с devShell (cargo, rustc, clippy, rustfmt, stdenv.cc для `rusqlite bundled`);
+   `rust-toolchain.toml`
+2. `Cargo.toml` со списком зависимостей из §8; `cargo build` проходит
+3. `model/document.rs`: `Block`, `BlockKind`, `Document`, `Anchor` + тесты инвариантов
+
+### Блок 2 — разбор текста
+
+4. `parse/txt.rs`: TXT и MD → `Document`; тесты: абзацы, `#`-заголовки, `>`-цитаты, списки,
+   `---`, Verse-блок, CRLF, BOM
+5. `parse/epub.rs`: container.xml → OPF → spine → XHTML; тест на EPUB, собранном в самом тесте
+   через `zip::ZipWriter`
+6. Тесты на реальном epub: порядок spine, извлечение `dc:title`/`dc:language`, разрыв `<br>`,
+   пропуск `script`/`style`
+7. `parse/mod.rs`: трейт `Source`, `detect_format` (расширение + magic bytes), `ParseError`
+
+### Блок 3 — раскладка и позиция
+
+8. `model/layout.rs`: перенос по ширине, `LineInfo`, `block_range`; тесты: перенос по дефису,
+   CJK/кириллица, слово длиннее ширины, пустые блоки
+9. `model/position.rs`: `scroll ↔ Anchor` в обе стороны + тест round-trip на 1000 `scroll`
+10. Тест инварианта: `Anchor` внутри блока даёт ту же строку при изменении `frac`
+
+### Блок 4 — выравнивание
+
+11. `align/mod.rs`: признаки блока (длина, число предложений, тип) + banded NW + трекбэк;
+    тест на синтетике: точное совпадение, сдвиг на 3 блока, merge/split, перевод ×1.2
+12. Быстрый путь (тождественная карта) + тест, что он даёт тот же результат, что DP
+13. Перевод `Anchor` через `Alignment` в обе стороны + фолбэк по прогрессу; тест: несопоставленный
+    блок не паникует и даёт разумный индекс
+
+### Блок 5 — хранилище
+
+14. Миграции SQLite (`PRAGMA user_version`), `open`/`init` в XDG data dir; тест на пустой БД
+15. `repo`: CRUD для `books`, `variants`, `progress`, `bookmarks`; тест: добавление книги,
+    прогресс round-trip, удаление книги каскадом чистит варианты и закладки
+16. Кэш выравнивания по `base_hash`/`var_hash` (fnv1a по сигнатурам блоков); тест: при изменении
+    файла хэш меняется и кэш инвалидируется
+
+### Блок 6 — читалка
+
+17. Каркас `ratatui::init/restore`, цикл событий, корректное восстановление терминала при панике
+    и `Ctrl+C`
+18. `ui/reader.rs`: рендер раскладки, заголовки, отступы у цитат, статус-бар, подсказка;
+    скроллбар и процент
+19. Навигация: `j/k`, `Space`, `Ctrl+D/U`, `PgUp/PgDn`, `g/G`, колесо мыши; сохранение прогресса
+    при выходе и периодически
+20. Переключение языка `L`/`1..9` с сохранением позиции; интеграционный тест (M1 + M3);
+    бейдж качества выравнивания при плохом маппинге
+
+### Блок 7 — полка и закладки
+
+21. `ui/shelf.rs`: список книг с заголовком, языками, прогрессом, датой; навигация, `Enter` —
+    открыть, `a` — добавить путь, `d` — удалить
+22. Закладки: `b` поставить, `B` панель списка с редактированием метки, `n/p` переход, `D`
+    удалить, подсветка закладки в статус-баре
+
+### Блок 8 — интеграция и полировка
+
+23. `flake.nix` → `nix build` для бинарника, `cargo install --path .` в профиль; проверка запуска
+    вне devShell
+24. `README.md`: установка, раскладка клавиш, формат сайдкаров перевода, формат БД
+25. Демо-набор: английский `.md` + русский перевод + EPUB-пара, чтобы проверить M1 руками
