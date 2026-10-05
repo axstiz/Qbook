@@ -50,6 +50,19 @@ impl Block {
     pub fn is_filler(&self) -> bool {
         self.kind.is_filler()
     }
+
+    /// Присваивает готовый текст и пересчитывает кэш длины.
+    /// Нужен там, где текст дописывается по частям в обход конструктора.
+    /// Обновляет кэш символьной длины после дописывания текста на месте.
+    pub fn set_char_len(&mut self, chars: usize) {
+        self.chars = chars;
+    }
+
+    pub fn assign(&mut self, text: String) {
+        let text = text.trim_end();
+        self.chars = text.chars().count();
+        self.text = text.to_owned();
+    }
 }
 
 /// Позиция в документе, не зависящая от языка отображения.

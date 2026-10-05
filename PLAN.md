@@ -176,6 +176,10 @@ flake.nix
    пропуск `script`/`style`
 7. `parse/mod.rs`: трейт `Source`, `detect_format` (расширение + magic bytes), `ParseError`
 
+> Блок 1 и 2 закрыты. Трейт `Source` не вводили: `parse::load` разруливает форматы сам,
+> а лишняя абстракция на два вызова ничего не даёт. Фикстура `tests/fixtures/sample-ru.epub` —
+> реальная книга без медиа: она держит разбор на настоящей разметке.
+
 ### Блок 3 — раскладка и позиция
 
 8. `model/layout.rs`: перенос по ширине, `LineInfo`, `block_range`; тесты: перенос по дефису,
