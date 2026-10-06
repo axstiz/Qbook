@@ -267,7 +267,7 @@ fn title_highlights_the_bookmark_label() {
 }
 
 #[test]
-fn note_marker_tints_the_first_column_of_the_bookmarked_block() {
+fn note_marker_tints_only_the_anchored_line_of_the_block() {
     let tmp = dir();
     std::fs::write(tmp.path().join("book.md"), paragraphs(30)).expect("файл");
     let store = qbook::store::Store::open(tmp.path().join("qbook.db")).expect("хранилище");
@@ -281,14 +281,16 @@ fn note_marker_tints_the_first_column_of_the_bookmarked_block() {
     app.handle_key(key(KeyCode::Enter));
 
     let (lines, buffer) = screen(&mut app, 40, 10);
-    assert!(lines[1].starts_with("│▎"), "маркер заметки на блоке: {:?}", lines[1]);
+    assert!(lines[1].starts_with("│▎"), "маркер заметки на якорной строке: {:?}", lines[1]);
     assert!(
         buffer[(1, 1)].style().fg == Some(qbook::ui::note_color(5)),
         "маркер цвета заметки: {:?}",
         buffer[(1, 1)].style()
     );
-    let blank = lines.iter().position(|l| l.starts_with("│▎ "));
-    assert_eq!(blank, Some(2), "маркер на отступе виден: {lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.starts_with("│▎ ") || l.contains("▎ ")),
+        "маркер только на якорной строке, не на отступах: {lines:?}"
+    );
 }
 
 #[test]

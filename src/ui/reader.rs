@@ -167,7 +167,7 @@ fn text_line(app: &App, info: &LineInfo) -> Line<'static> {
         " ".repeat(pad)
     };
     let mut spans = Vec::new();
-    if let Some(color) = app.note_color(info.block) {
+    if let Some(color) = app.note_line_color(info) {
         spans.push(Span::styled("▎", Style::new().fg(note_color(color))));
     }
     spans.push(Span::styled(prefix, style));

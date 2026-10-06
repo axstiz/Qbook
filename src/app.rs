@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::align::{Alignment, align};
 use crate::cli::find_sidecars;
-use crate::model::{Anchor, Document, Layout, anchor_to_scroll, scroll_to_anchor};
+use crate::model::{Anchor, Block, Document, Layout, LineInfo, anchor_to_scroll, scroll_to_anchor};
 use crate::parse;
 use crate::store::{Bookmark, DEFAULT_NOTE_COLOR, Store, StoreError, document_hash};
 
@@ -822,6 +822,13 @@ impl App {
                 PickKind::Note => self.finish_note_pick(),
                 PickKind::Select => self.copy_selection(),
             },
+            // Зажатый/повторный `v`: якорь выделения переносится на курсор.
+            KeyCode::Char('v') if kind == PickKind::Select => {
+                if let Some(pick) = &mut self.pick {
+                    pick.base = pick.row;
+                }
+                self.set_notice(": якорь здесь · ↑/↓ тянуть · y копировать · Esc".to_owned());
+            }
             KeyCode::Char('y') if kind == PickKind::Select => self.copy_selection(),
             // Остальные клавиши гасят курсор и обрабатываются как обычные.
             _ => {
@@ -1358,6 +1365,23 @@ impl App {
     /// Цвет заметки на блоке — маркер▎ в тексте, если такая заметка есть.
     pub fn note_color(&self, block: usize) -> Option<u8> {
         self.bookmarks.iter().find(|b| b.anchor.block == block).map(|b| b.color)
+    }
+
+    /// Заметка, чей якорь лежит на конкретной строке раскладки: маркер▎
+    /// подсвечивает только строку с началом заметки, а не весь абзац.
+    pub fn note_line_color(&self, info: &LineInfo) -> Option<u8> {
+        let chars = self.document().block(info.block).map_or(0, Block::char_len);
+        self.bookmarks.iter().find_map(|b| {
+            if b.anchor.block != info.block {
+                return None;
+            }
+            let offset = match chars {
+                0 => 0,
+                chars => (chars as f32 * b.anchor.frac).round() as usize,
+            };
+            (offset >= info.start_char && offset < info.end_char.max(info.start_char + 1))
+                .then_some(b.color)
+        })
     }
 
     /// Имя цвета заметки для блока «Заметка».

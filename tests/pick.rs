@@ -102,3 +102,61 @@ fn v_selects_and_y_copies_rows_to_clipboard() {
     assert!(app.take_clipboard().is_some(), "текст отдан main для OSC 52");
     assert!(app.pick_hint().is_none(), "подсказка погасла вместе с курсором");
 }
+
+#[test]
+fn held_v_reanchors_the_selection_at_the_cursor() {
+    let tmp = dir();
+    let base = tmp.path().join("book.md");
+    write(&base, &paragraphs(30));
+    let mut app = load(&base, None);
+    app.set_size(40, 12);
+    app.set_scroll(0);
+
+    app.handle_key(key(KeyCode::Char('v')));
+    for _ in 0..3 {
+        app.handle_key(key(KeyCode::Down));
+    }
+    assert_eq!(app.selection_range(), Some((0, 3)), "растянули до курсора 3");
+
+    app.handle_key(key(KeyCode::Char('v')));
+    for _ in 0..2 {
+        app.handle_key(key(KeyCode::Up));
+    }
+    let (top, bottom) = app.selection_range().expect("диапазон");
+    assert_eq!((top, bottom), (1, 3), "v перезаякорил на 3, две стрелки вверх — 1..=3");
+
+    app.handle_key(key(KeyCode::Char('v')));
+    app.handle_key(key(KeyCode::Down));
+    let (top, bottom) = app.selection_range().expect("диапазон");
+    assert!((top..=bottom).contains(&1), "повторный v снова перезаякорил");
+    assert!(bottom > top, "стрелки тянут от нового якоря");
+}
+
+#[test]
+fn note_marker_sits_on_the_anchored_line_across_blocks() {
+    let tmp = dir();
+    let base = tmp.path().join("book.md");
+    write(&base, &paragraphs(10));
+    let store = Store::open(tmp.path().join("qbook.db")).expect("хранилище");
+    let mut app = load(&base, Some(store));
+    app.set_size(40, 12);
+    app.set_scroll(0);
+
+    // Выбираем строку второго абзаца курсором `b`.
+    app.handle_key(key(KeyCode::Char('b')));
+    for _ in 0..2 {
+        app.handle_key(key(KeyCode::Down));
+    }
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.bookmarks().len(), 1);
+
+    let anchored = app.bookmarks()[0].anchor;
+    assert!(anchored.frac > 0.0 || anchored.block > 0, "якорь не на первой строке");
+    let colored: Vec<usize> = (0..app.layout().len())
+        .filter(|&row| {
+            app.layout().line(row).is_some_and(|info| app.note_line_color(info).is_some())
+        })
+        .collect();
+    assert_eq!(colored.len(), 1, "подсвечена ровно одна строка: {colored:?}");
+}
