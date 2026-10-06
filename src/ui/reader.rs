@@ -12,7 +12,7 @@ use ratatui::widgets::{
 use crate::app::{App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus};
 use crate::model::{BlockKind, LineInfo};
 use crate::parse::txt::{list_marker, strip_heading};
-use crate::ui::note_color;
+use crate::ui::{btop_gauge, note_color};
 
 /// Сколько команд показываем в блоке «Команды».
 const COMMANDS_MAX_ROWS: usize = 12;
@@ -226,7 +226,7 @@ fn title_line(app: &App) -> Line<'static> {
         ));
     }
     spans.push(Span::raw(" "));
-    spans.push(Span::styled(progress_bar(percent), Style::new().fg(Color::Cyan)));
+    spans.extend(btop_gauge(percent, PROGRESS_CELLS).spans);
     spans.push(Span::raw(format!("{percent:.0}%")));
     spans.push(Span::raw(format!(" {block}/{total}")));
     if let Some(bookmark) = app.bookmark_at() {
@@ -236,13 +236,6 @@ fn title_line(app: &App) -> Line<'static> {
         ));
     }
     Line::from(spans)
-}
-
-/// Полоска прогресса `▓▓▓░` из восьми клеток.
-fn progress_bar(percent: f32) -> String {
-    let filled = ((percent / 100.0) * PROGRESS_CELLS as f32).round() as usize;
-    let filled = filled.min(PROGRESS_CELLS);
-    "▓".repeat(filled) + &"░".repeat(PROGRESS_CELLS - filled)
 }
 
 /// Рамка в правой колонке со скруглёнными углами и подписанным заголовком.
@@ -308,7 +301,8 @@ fn render_toc(app: &App, frame: &mut Frame, area: Rect, active: bool) {
 }
 
 /// Правая колонка: снизу список команд, над ним заметки. Когда места мало,
-/// блок команд прячется сам — заметки остаются; в фокусе команд он всегда виден.
+/// блок команд прячется сам — заметки остаются (минимум BOOKMARKS_MIN строк);
+/// даже в фокусе команд он не съедает колонку целиком.
 fn render_right(app: &App, frame: &mut Frame, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -316,7 +310,7 @@ fn render_right(app: &App, frame: &mut Frame, area: Rect) {
     let mut above = area;
     let focused = app.focus() == ReaderFocus::Commands;
     if app.commands_visible() && (focused || above.height >= BOOKMARKS_MIN + 3) {
-        let limit = if focused { above.height } else { above.height - BOOKMARKS_MIN };
+        let limit = above.height.saturating_sub(BOOKMARKS_MIN).max(3);
         let cmds_height = (COMMANDS.len().min(COMMANDS_MAX_ROWS) as u16 + 2).min(limit);
         let cmds_area = Rect {
             x: area.x,

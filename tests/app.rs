@@ -338,17 +338,29 @@ fn help_toggles_with_question_mark_and_esc() {
 }
 
 #[test]
-fn q_exits_only_when_no_overlay_is_open() {
+fn q_and_h_work_from_any_block() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 3);
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('o')));
     app.handle_key(key(KeyCode::Char('q')));
-    assert!(!app.should_quit(), "q в фокусе глав не выходит");
-    app.handle_key(key(KeyCode::Esc));
+    assert!(app.should_quit(), "q в фокусе глав выходит");
+
+    let mut app = load(&base, None);
+    app.handle_key(key(KeyCode::Char('3')));
     app.handle_key(key(KeyCode::Char('q')));
-    assert!(app.should_quit(), "q в читалке выходит");
+    assert!(app.should_quit(), "q в фокусе заметок выходит");
+
+    let mut app = load(&base, None);
+    app.handle_key(key(KeyCode::Char('4')));
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(app.should_quit(), "q в фокусе команд выходит");
+
+    let mut app = load(&base, None);
+    app.handle_key(key(KeyCode::Char('o')));
+    app.handle_key(key(KeyCode::Char('h')));
+    assert_eq!(app.screen(), qbook::app::Screen::Shelf, "h в фокусе глав — на полку");
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('?')));

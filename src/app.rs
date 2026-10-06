@@ -549,6 +549,8 @@ impl App {
             self.handle_pick_key(key);
         } else if self.panel_digit(key) {
             // Цифры 1–4 переключают постоянные btop-колонки из любого фокуса.
+        } else if self.reader_global_key(key) {
+            // `q`/`h` работают из любого блока, не только из текста.
         } else {
             match self.focus {
                 ReaderFocus::Text => self.handle_reader_key(key),
@@ -559,11 +561,22 @@ impl App {
         }
     }
 
+    /// Клавиши, живущие вне фокуса: выход и полка.
+    fn reader_global_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.quit = true;
+            }
+            KeyCode::Char('h') => self.go_shelf(),
+            _ => return false,
+        }
+        true
+    }
+
     fn handle_reader_key(&mut self, key: KeyEvent) {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('c') if control => self.quit = true,
             KeyCode::Char('j') | KeyCode::Down => self.scroll_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_by(-1),
             KeyCode::Char(' ') | KeyCode::PageDown => {
@@ -580,7 +593,6 @@ impl App {
                 self.next_lang();
             }
             KeyCode::Char('5') | KeyCode::Char(':') => self.start_command(),
-            KeyCode::Char('h') => self.go_shelf(),
             KeyCode::Char('b') => self.start_note_pick(),
             KeyCode::Char('v') => self.start_select(),
             KeyCode::Char('n') => self.jump_bookmark(true),

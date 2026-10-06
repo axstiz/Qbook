@@ -103,7 +103,9 @@ fn long_documents_get_a_scrollbar() {
     let mut app = app_of(&paragraphs(60));
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
-    assert!(lines.iter().any(|line| line.contains('█')), "скроллбар есть: {lines:?}");
+    // Скроллбар живёт в правой колонке внутренней области рамки (x=38).
+    let column: String = lines.iter().map(|l| l.chars().nth(38).unwrap_or(' ')).collect();
+    assert!(column.contains('█'), "скроллбар есть: {column:?}");
 }
 
 #[test]
@@ -111,7 +113,8 @@ fn short_documents_have_no_scrollbar() {
     let mut app = app_of(&paragraphs(3));
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
-    assert!(!lines.iter().any(|line| line.contains('█')), "скроллбара нет: {lines:?}");
+    let column: String = lines.iter().map(|l| l.chars().nth(38).unwrap_or(' ')).collect();
+    assert!(!column.contains('█'), "скроллбара нет: {column:?}");
 }
 
 #[test]
@@ -193,7 +196,7 @@ fn shelf_renders_title_langs_percent_and_date() {
     assert!(all.contains("2023-11-14"), "дата добавления: {all}");
     assert!(all.contains("en"), "базовый язык: {all}");
     assert!(all.contains("ru"), "перевод: {all}");
-    assert!(all.contains('▓'), "мини-прогресс: {all}");
+    assert!(all.contains('█'), "мини-прогресс: {all}");
     let cursor = lines.iter().find(|l| l.contains("Война и мир")).expect("строка книги");
     assert!(cursor.contains('►'), "курсор полки отмечен: {cursor}");
 }
@@ -447,6 +450,21 @@ fn commands_block_hides_itself_but_bookmarks_stay() {
     let all = lines.join("\n");
     assert!(all.contains(":open"), "команды вернулись: {all}");
     assert!(all.contains("Заметки"), "заметки на месте: {all}");
+}
+
+#[test]
+fn focused_commands_do_not_eat_the_bookmarks() {
+    let mut app = app_of(&paragraphs(5));
+    app.set_size(96, 10);
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('4'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let (lines, _) = screen(&mut app, 96, 10);
+    let all = lines.join("\n");
+    assert!(all.contains(":open"), "команды в фокусе видны: {all}");
+    assert!(all.contains("Заметки"), "заметки остались: {all}");
+    assert!(all.contains("— пусто"), "список заметок не съеден: {all}");
 }
 
 #[test]

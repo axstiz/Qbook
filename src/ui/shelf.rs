@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use crate::app::{App, InputPurpose};
+use crate::ui::btop_gauge;
 
 const PROGRESS_CELLS: usize = 14;
 
@@ -63,20 +64,16 @@ fn book_line(book: &crate::app::ShelfBook, selected: bool) -> Line<'static> {
     } else {
         Span::raw("  ")
     };
-    Line::from(vec![
+    let mut spans = vec![
         marker,
         Span::styled(book.title.clone(), title_style),
         Span::styled(format!(" · {}", book.langs.join(" ")), dim),
         Span::raw(" "),
-        Span::styled(mini_progress(book.percent), Style::new().fg(Color::Cyan)),
-        Span::styled(format!(" {:5.1}% · {}", book.percent, format_date(book.date)), dim),
-    ])
-}
-
-/// Мини-полоска прогресса из `PROGRESS_CELLS` клеток.
-fn mini_progress(percent: f32) -> String {
-    let filled = ((percent.clamp(0.0, 100.0) / 100.0) * PROGRESS_CELLS as f32).round() as usize;
-    format!("{}{}", "▓".repeat(filled), "░".repeat(PROGRESS_CELLS - filled))
+    ];
+    spans.extend(btop_gauge(book.percent, PROGRESS_CELLS).spans);
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(format!("{:5.1}% · {}", book.percent, format_date(book.date)), dim));
+    Line::from(spans)
 }
 
 fn footer_line(app: &App) -> Line<'static> {
