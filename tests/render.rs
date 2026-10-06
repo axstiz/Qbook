@@ -64,9 +64,21 @@ fn headings_quotes_and_paragraphs_are_decorated() {
         (0..40).any(|x| buffer[(x, 0)].style().add_modifier.contains(Modifier::BOLD));
     assert!(heading_bold, "заголовок жирный");
 
-    assert!(lines[1].contains("▌ первая строка цитаты"), "маркер цитаты: {:?}", lines[1]);
-    assert!(lines[2].starts_with("  вторая строка"), "отступ продолжения цитаты: {:?}", lines[2]);
-    assert!(lines[3].starts_with("обычный абзац"), "абзац без отступа: {:?}", lines[3]);
+    assert!(lines[1].trim_end().is_empty(), "отступ после заголовка: {:?}", lines[1]);
+    assert!(lines[2].contains("▌ первая строка цитаты"), "маркер цитаты: {:?}", lines[2]);
+    assert!(lines[3].starts_with("  вторая строка"), "отступ продолжения цитаты: {:?}", lines[3]);
+    assert!(lines[4].trim_end().is_empty(), "отступ после цитаты: {:?}", lines[4]);
+    assert!(lines[5].starts_with("обычный абзац"), "абзац без отступа: {:?}", lines[5]);
+}
+
+#[test]
+fn paragraphs_are_separated_by_a_blank_line_on_screen() {
+    let mut app = app_of("первый абзац\n\nвторой абзац");
+    app.set_size(40, 6);
+    let (lines, _) = screen(&mut app, 40, 6);
+    assert_eq!(lines[0].trim_end(), "первый абзац");
+    assert!(lines[1].trim_end().is_empty(), "между абзацами пустая строка: {:?}", lines[1]);
+    assert_eq!(lines[2].trim_end(), "второй абзац");
 }
 
 #[test]

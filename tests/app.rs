@@ -110,17 +110,19 @@ fn navigation_keys_move_the_viewport() {
     assert_eq!(app.scroll(), 9);
 
     app.handle_key(key(KeyCode::Char('G')));
-    assert_eq!(app.scroll(), 51, "низ документа зажат");
+    // 60 абзацев с отступами = 119 строк, видимых 9.
+    assert_eq!(app.scroll(), 110, "низ документа зажат");
     app.handle_key(key(KeyCode::Char('g')));
     assert_eq!(app.scroll(), 0);
 
-    app.set_scroll(51);
+    let end = app.max_scroll();
+    app.set_scroll(end);
     app.handle_wheel(true);
-    assert_eq!(app.scroll(), 48, "колесо вверх — три строки");
+    assert_eq!(app.scroll(), end - 3, "колесо вверх — три строки");
     app.handle_wheel(false);
-    assert_eq!(app.scroll(), 51);
+    assert_eq!(app.scroll(), end);
     app.handle_wheel(false);
-    assert_eq!(app.scroll(), 51, "конец документа зажат");
+    assert_eq!(app.scroll(), end, "конец документа зажат");
 }
 
 #[test]

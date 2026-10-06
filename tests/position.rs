@@ -91,10 +91,16 @@ fn single_line_block_keeps_one_line_for_any_frac() {
     );
     let layout = Layout::new(&doc, 40);
     let expected = layout.block_range(0).start;
-    for i in 0..=20 {
+    for i in 0..20 {
         let frac = i as f32 / 20.0;
         assert_eq!(anchor_to_scroll(&layout, &doc, Anchor::new(0, frac)), expected, "frac {frac}");
     }
+    // Фракция 1.0 — конец блока: с отступом между абзацами это blank-строка.
+    assert_eq!(
+        anchor_to_scroll(&layout, &doc, Anchor::new(0, 1.0)),
+        layout.block_range(0).end - 1,
+        "конец блока ведёт на его отступ"
+    );
     assert_eq!(anchor_to_scroll(&layout, &doc, Anchor::new(1, 0.5)), layout.block_range(1).start);
 }
 

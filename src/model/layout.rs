@@ -3,6 +3,8 @@
 //! Все индексы — в символах, не в байтах: иначе кириллица и эмодзи ломают
 //! переходы между строками. Диапазоны строк блока идут подряд и покрывают весь
 //! текст блока — на этом держится round-trip `scroll → Anchor → scroll`.
+//! После непустого блока (кроме последнего) идёт отступ — blank-строка с
+//! пустым диапазоном, она принадлежит своему блоку.
 
 use std::ops::Range;
 
@@ -51,12 +53,26 @@ impl Layout {
         let mut block_range = Vec::with_capacity(doc.len());
         for (block, item) in doc.blocks().iter().enumerate() {
             let start = lines.len();
-            for (line_in_block, range) in wrap(&item.text, cells).into_iter().enumerate() {
+            let wrapped = wrap(&item.text, cells);
+            // Отступ между абзацами: пустая строка после блока, чья последняя
+            // строка непуста. Пустые блоки и блоки с концевым \n её не получают —
+            // иначе она неотличима от их собственных строк и round-trip ломается.
+            let gap = wrapped.last().is_some_and(|last| last.start < last.end);
+            for (line_in_block, range) in wrapped.into_iter().enumerate() {
                 lines.push(LineInfo {
                     block,
                     line_in_block,
                     start_char: range.start,
                     end_char: range.end,
+                });
+            }
+            let char_len = item.char_len();
+            if gap && block + 1 < doc.len() {
+                lines.push(LineInfo {
+                    block,
+                    line_in_block: lines.len() - start,
+                    start_char: char_len,
+                    end_char: char_len,
                 });
             }
             block_range.push(start..lines.len());
@@ -352,6 +368,44 @@ mod tests {
             assert_eq!(at, block.char_len(), "блок {i}: диапазоны не покрывают текст");
         }
         assert_eq!(layout.block_range(99), 0..0);
+    }
+
+    #[test]
+    fn paragraphs_are_separated_by_a_blank_line() {
+        let doc = Document::new(
+            "en",
+            "T",
+            vec![
+                Block::new(BlockKind::Paragraph, "первый"),
+                Block::new(BlockKind::Paragraph, "второй абзац"),
+                Block::new(BlockKind::Paragraph, "третий"),
+            ],
+        );
+        let layout = Layout::new(&doc, 40);
+        assert_eq!(layout.block_range(0), 0..2, "текст + отступ");
+        assert_eq!(layout.block_range(1), 2..4);
+        assert_eq!(layout.block_range(2), 4..5, "после последнего блока отступа нет");
+        let blank = layout.line(1).expect("отступ после первого блока");
+        assert_eq!(blank.block, 0, "отступ принадлежит своему блоку");
+        assert_eq!(blank.start_char, blank.end_char, "отступ без символов");
+        assert_eq!(blank.slice(doc.block(0).expect("блок")), "");
+    }
+
+    #[test]
+    fn filler_and_newline_ending_blocks_get_no_blank_line() {
+        let doc = Document::new(
+            "en",
+            "T",
+            vec![
+                Block::new(BlockKind::Paragraph, "ab\n"),
+                Block::new(BlockKind::Rule, ""),
+                Block::new(BlockKind::Paragraph, "hi"),
+            ],
+        );
+        let layout = Layout::new(&doc, 40);
+        assert_eq!(layout.block_range(0), 0..2, "концевой \\n не пускает отступ");
+        assert_eq!(layout.block_range(1), 2..3, "пустой блок без отступа");
+        assert_eq!(layout.block_range(2), 3..4);
     }
 
     #[test]
