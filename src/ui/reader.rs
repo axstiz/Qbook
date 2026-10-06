@@ -256,6 +256,7 @@ fn title_line(app: &App) -> Line<'static> {
     }
     spans.push(Span::raw(" "));
     spans.extend(btop_gauge(percent, PROGRESS_CELLS).spans);
+    spans.push(Span::raw(" "));
     spans.push(Span::raw(format!("{percent:.0}%")));
     spans.push(Span::raw(format!(" {block}/{total}")));
     if let Some(bookmark) = app.bookmark_at() {

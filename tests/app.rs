@@ -601,3 +601,26 @@ fn resize_keeps_the_block_in_view() {
     app.set_size(17, 20);
     assert_eq!(app.anchor().block, block, "ресайз не теряет абзац");
 }
+
+#[test]
+fn bracket_keys_narrow_and_widen_the_text() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 4);
+    let mut app = load(&base, None);
+    app.set_size(60, 12);
+    let auto = app.layout().width();
+
+    app.handle_key(key(KeyCode::Char('[')));
+    let narrowed = app.layout().width();
+    assert!(narrowed < auto, "[ ужимает колонку: {narrowed} < {auto}");
+
+    app.handle_key(key(KeyCode::Char(']')));
+    assert_eq!(app.layout().width(), auto, "] возвращает автоширину");
+
+    for _ in 0..20 {
+        app.handle_key(key(KeyCode::Char('[')));
+    }
+    let min = app.layout().width();
+    assert!(min < auto, "[ повторный ужимает дальше: {min} < {auto}");
+    assert!(min > 0, "колонка не схлопывается в ноль");
+}

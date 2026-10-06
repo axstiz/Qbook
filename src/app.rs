@@ -510,8 +510,9 @@ impl App {
     }
 
     /// Клавиши `[`/`]`: уже/шире колонку с сохранением позиции чтения.
+    /// `col_extra` уходит в минус (уже автоширины) и ограничен разумным.
     fn resize_column(&mut self, delta: i16) {
-        self.col_extra = self.col_extra.saturating_add(delta);
+        self.col_extra = (self.col_extra + delta).clamp(-40, 40);
         let anchor = self.anchor();
         self.apply_layout(anchor);
     }
