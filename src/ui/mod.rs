@@ -43,6 +43,12 @@ pub fn render(app: &App, frame: &mut Frame) {
     if app.bookmarks_open() {
         render_bookmarks(app, frame, area, top);
     }
+    if app.toc_open() {
+        render_toc(app, frame, area, top);
+    }
+    if app.help_open() {
+        render_help(frame, area, top);
+    }
 }
 
 fn render_bookmarks(app: &App, frame: &mut Frame, area: Rect, below: u16) {
@@ -68,6 +74,77 @@ fn render_bookmarks(app: &App, frame: &mut Frame, area: Rect, below: u16) {
         lines.push(Line::from(vec![
             Span::styled(marker, style),
             Span::styled(bookmark.label.clone(), style),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), Rect { x: area.x, y, width: area.width, height });
+}
+
+/// Пункты справки: клавиши читалки в порядке их появления в README.
+const HELP: &[&str] = &[
+    "Справка — Esc или ? закрывают:",
+    "j/k, Space, PgUp/PgDn, g/G — прокрутка",
+    "Ctrl+D/U — полстраницы, колесо мыши",
+    "L, 1..9 — язык, позиция сохраняется",
+    "b — закладка, B — список, n/p — переход",
+    "o — оглавление, Enter — к разделу",
+    "[ / ] — уже/шире колонку",
+    "l — полка, a — добавить, d — удалить",
+    "q — выход",
+];
+
+fn render_help(frame: &mut Frame, area: Rect, below: u16) {
+    let available = below.saturating_sub(area.y) as usize;
+    if available == 0 {
+        return;
+    }
+    let rows = HELP.len().min(available);
+    let y = below - rows as u16;
+    let lines: Vec<Line> = HELP
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let style =
+                if i == 0 { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
+            Line::from(Span::styled(*text, style))
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(lines),
+        Rect { x: area.x, y, width: area.width, height: rows as u16 },
+    );
+}
+
+fn render_toc(app: &App, frame: &mut Frame, area: Rect, below: u16) {
+    let available = below.saturating_sub(area.y);
+    if available == 0 {
+        return;
+    }
+    let items = app.document().toc();
+    if items.is_empty() {
+        let line = Line::from(Span::styled(
+            "Оглавление: нет заголовков",
+            Style::new().add_modifier(Modifier::DIM),
+        ));
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect { x: area.x, y: below - 1, width: area.width, height: 1 },
+        );
+        return;
+    }
+    let rows = items.len().min(available.saturating_sub(1) as usize);
+    let height = rows.saturating_add(1) as u16;
+    let y = below - height;
+    let start = app.toc_cursor().saturating_sub(rows.saturating_sub(1));
+
+    let mut lines =
+        vec![Line::from(Span::styled("Оглавление:", Style::new().add_modifier(Modifier::DIM)))];
+    for (index, item) in items.iter().enumerate().skip(start).take(rows) {
+        let selected = index == app.toc_cursor();
+        let style = if selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
+        let indent = "  ".repeat(item.level.saturating_sub(1) as usize);
+        lines.push(Line::from(vec![
+            Span::styled(if selected { "> " } else { "  " }, style),
+            Span::styled(format!("{indent}{}", item.title), style),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), Rect { x: area.x, y, width: area.width, height });

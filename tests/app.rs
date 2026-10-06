@@ -214,6 +214,154 @@ fn m2_opens_three_thousand_blocks_under_half_a_second() {
     assert!(elapsed < Duration::from_millis(500), "M2: открытие заняло {elapsed:?}");
 }
 
+/// Книга с тремя заголовками: блоки 0 (H1), 2 (H2), 4 (H1) между абзацами,
+/// и перевод с той же структурой.
+fn toc_book(dir: &Path) -> PathBuf {
+    let base = dir.join("toc.md");
+    let text = |suffix: &str| {
+        format!(
+            "# Раздел 1\n\nпервый абзац{suffix}\n\n## Раздел 2\n\nвторой абзац{suffix}\n\n\
+             # Раздел 3\n\nтретий абзац{suffix}"
+        )
+    };
+    write(&base, &text(""));
+    write(&dir.join("toc.ru.md"), &text(" (перевод)"));
+    base
+}
+
+#[test]
+fn o_opens_toc_with_cursor_on_current_heading_and_enter_jumps() {
+    let tmp = dir();
+    let base = toc_book(tmp.path());
+    let mut app = load(&base, None);
+    app.set_size(60, 12);
+    assert_eq!(app.document().toc().len(), 3, "три заголовка");
+    assert!(!app.toc_open());
+
+    app.handle_key(key(KeyCode::Char('o')));
+    assert!(app.toc_open(), "оглавление открыто");
+    assert_eq!(app.toc_cursor(), 0, "курсор на текущем разделе");
+
+    app.handle_key(key(KeyCode::Char('j')));
+    assert_eq!(app.toc_cursor(), 1, "курсор вниз");
+    app.handle_key(key(KeyCode::Char('k')));
+    assert_eq!(app.toc_cursor(), 0, "курсор вверх");
+    app.handle_key(key(KeyCode::Char('k')));
+    assert_eq!(app.toc_cursor(), 0, "верх списка зажат");
+
+    app.handle_key(key(KeyCode::Enter));
+    assert!(!app.toc_open(), "Enter закрывает оглавление");
+    assert_eq!(app.anchor().block, 0, "прыжок к первому заголовку");
+
+    app.set_size(60, 2);
+    app.set_scroll(app.max_scroll());
+    app.handle_key(key(KeyCode::Char('o')));
+    assert_eq!(app.toc_cursor(), 2, "курсор на текущем разделе внизу книги");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.anchor().block, 4, "прыжок к третьему разделу");
+
+    app.handle_key(key(KeyCode::Char('o')));
+    app.handle_key(key(KeyCode::Esc));
+    assert!(!app.toc_open(), "Esc закрывает оглавление");
+}
+
+#[test]
+fn toc_jumps_to_the_same_block_after_switching_language() {
+    let tmp = dir();
+    let base = toc_book(tmp.path());
+    let mut app = load(&base, None);
+    app.set_size(60, 12);
+    assert!(app.switch_lang(1), "перевод подключён");
+
+    app.handle_key(key(KeyCode::Char('o')));
+    app.handle_key(key(KeyCode::Char('j')));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.anchor().block, 2, "заголовок второго раздела на переводе");
+}
+
+#[test]
+fn toc_over_empty_document_is_safe() {
+    let tmp = dir();
+    let base = tmp.path().join("plain.txt");
+    write(&base, "строка один\nещё строка");
+    let mut app = load(&base, None);
+    assert!(app.document().toc().is_empty(), "заголовков нет");
+
+    app.handle_key(key(KeyCode::Char('o')));
+    assert!(app.toc_open(), "пустое оглавление тоже открывается");
+    app.handle_key(key(KeyCode::Char('j')));
+    app.handle_key(key(KeyCode::Enter));
+    assert!(!app.toc_open(), "Enter закрывает пустое оглавление");
+    assert_eq!(app.scroll(), 0, "прыжка не было");
+}
+
+#[test]
+fn help_toggles_with_question_mark_and_esc() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 3);
+    let mut app = load(&base, None);
+    assert!(!app.help_open());
+
+    app.handle_key(key(KeyCode::Char('?')));
+    assert!(app.help_open(), "справка открыта");
+    app.handle_key(key(KeyCode::Char('?')));
+    assert!(!app.help_open(), "второй ? закрывает");
+    app.handle_key(key(KeyCode::Char('?')));
+    app.handle_key(key(KeyCode::Esc));
+    assert!(!app.help_open(), "Esc закрывает справку");
+}
+
+#[test]
+fn q_exits_only_when_no_overlay_is_open() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 3);
+
+    let mut app = load(&base, None);
+    app.handle_key(key(KeyCode::Char('o')));
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(!app.should_quit(), "q в оглавлении не выходит");
+    app.handle_key(key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(app.should_quit(), "q в читалке выходит");
+
+    let mut app = load(&base, None);
+    app.handle_key(key(KeyCode::Char('?')));
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(!app.should_quit(), "q в справке не выходит");
+    app.handle_key(key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(app.should_quit(), "после закрытия q выходит");
+}
+
+#[test]
+fn brackets_widen_and_narrow_the_column_keeping_the_block() {
+    let tmp = dir();
+    let base = tmp.path().join("book.md");
+    let long = "Очень длинный абзац про прогулку по вечернему городу, ".repeat(6);
+    let body = (0..12).map(|i| format!("{long}{i}")).collect::<Vec<_>>().join("\n\n");
+    write(&base, &body);
+
+    let mut app = load(&base, None);
+    app.set_size(60, 10);
+    app.set_scroll(15);
+    let before = app.anchor();
+    let width = app.layout().width();
+
+    app.handle_key(key(KeyCode::Char(']')));
+    assert!(app.layout().width() > width, "]: колонка шире");
+    assert_eq!(app.anchor().block, before.block, "позиция не прыгнула");
+
+    app.handle_key(key(KeyCode::Char('[')));
+    assert_eq!(app.layout().width(), width, "[: обратно к автоширине");
+    assert_eq!(app.anchor().block, before.block, "позиция не прыгнула");
+
+    for _ in 0..40 {
+        app.handle_key(key(KeyCode::Char('[')));
+    }
+    assert!(app.layout().width() >= 20, "узкая колонка не уже 20: {}", app.layout().width());
+    assert_eq!(app.anchor().block, before.block, "позиция не прыгнула при клампе");
+}
+
 #[test]
 fn l_cycles_languages_and_out_of_range_keys_are_ignored() {
     let tmp = dir();

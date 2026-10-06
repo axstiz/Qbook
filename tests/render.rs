@@ -223,3 +223,39 @@ fn status_bar_highlights_the_bookmark_label() {
     let status = lines.last().expect("статус");
     assert!(status.contains("Абзац номер 0"), "метка закладки в статусе: {status}");
 }
+
+#[test]
+fn toc_overlay_lists_headings_above_the_status_line() {
+    let mut app = app_of(
+        "# Раздел 1\n\nпервый абзац\n\n## Раздел 2\n\nвторой абзац\n\n# Раздел 3\n\nтретий абзац",
+    );
+    app.set_size(50, 12);
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('o'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let (lines, _) = draw(&mut app, 50, 12);
+    let all = lines.join("\n");
+    assert!(all.contains("Оглавление"), "заголовок шторки: {all}");
+    assert!(all.contains("Раздел 1"), "первый пункт: {all}");
+    assert!(all.contains("Раздел 2"), "второй пункт: {all}");
+    assert!(all.contains("Раздел 3"), "третий пункт: {all}");
+    let status = lines.last().expect("статус");
+    assert!(status.contains('%'), "статус не перекрыт: {status}");
+}
+
+#[test]
+fn help_overlay_shows_bindings_and_keeps_status_visible() {
+    let mut app = app_of(&paragraphs(10));
+    app.set_size(50, 14);
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('?'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let (lines, _) = draw(&mut app, 50, 14);
+    let all = lines.join("\n");
+    assert!(all.contains("Справка"), "заголовок справки: {all}");
+    assert!(all.contains("оглавление"), "строка об оглавлении: {all}");
+    let status = lines.last().expect("статус");
+    assert!(status.contains('%'), "статус не перекрыт: {status}");
+}

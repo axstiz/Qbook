@@ -19,6 +19,9 @@ const DEFAULT_WIDTH: u16 = 80;
 const DEFAULT_HEIGHT: u16 = 24;
 /// Резерв под префиксы блоков (цитаты, стихи) и скроллбар справа.
 pub const TEXT_PAD: u16 = 5;
+/// Шаг клавиш `[`/`]`: уже/шире колонка, и её минимальная ширина.
+const COL_STEP: i16 = 4;
+const COL_MIN: u16 = 20;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -92,6 +95,11 @@ pub struct App {
     bookmarks: Vec<Bookmark>,
     bookmarks_open: bool,
     bookmark_cursor: usize,
+    toc_open: bool,
+    toc_cursor: usize,
+    help_open: bool,
+    /// Смещение ширины переноса от автоширины (клавиши `[`/`]`).
+    col_extra: i16,
     /// Язык по умолчанию для книг, добавляемых через prompt.
     default_lang: String,
 }
@@ -181,6 +189,10 @@ impl App {
             bookmarks: Vec::new(),
             bookmarks_open: false,
             bookmark_cursor: 0,
+            toc_open: false,
+            toc_cursor: 0,
+            help_open: false,
+            col_extra: 0,
             default_lang: base_lang.to_owned(),
         })
     }
@@ -209,6 +221,10 @@ impl App {
             bookmarks: Vec::new(),
             bookmarks_open: false,
             bookmark_cursor: 0,
+            toc_open: false,
+            toc_cursor: 0,
+            help_open: false,
+            col_extra: 0,
             default_lang: default_lang.to_owned(),
         };
         app.reload_shelf();
@@ -249,6 +265,25 @@ impl App {
 
     pub fn bookmark_cursor(&self) -> usize {
         self.bookmark_cursor
+    }
+
+    pub fn toc_open(&self) -> bool {
+        self.toc_open
+    }
+
+    pub fn toc_cursor(&self) -> usize {
+        self.toc_cursor
+    }
+
+    pub fn help_open(&self) -> bool {
+        self.help_open
+    }
+
+    /// Ширина переноса: автоширина со смещением `[`/`]`, зажатая в разумных пределах.
+    pub fn wrap_width(&self) -> u16 {
+        let max = self.width.saturating_sub(2);
+        let low = COL_MIN.min(max);
+        self.width.saturating_sub(TEXT_PAD).saturating_add_signed(self.col_extra).clamp(low, max)
     }
 
     /// Закладка на текущем блоке — её метку показывает статус-бар.
@@ -317,16 +352,23 @@ impl App {
 
     /// Новый размер окна: позиция переходом через якорь, сохраняя абзац на месте.
     pub fn set_size(&mut self, width: u16, height: u16) {
-        let anchor = match self.pending_anchor.take() {
-            Some(anchor) => Some(anchor),
-            None => Some(self.anchor()),
-        };
+        let anchor = self.pending_anchor.take().unwrap_or_else(|| self.anchor());
         self.width = width;
         self.height = height;
-        self.layout = Layout::new(self.document(), width.saturating_sub(TEXT_PAD));
-        if let Some(anchor) = anchor {
-            self.scroll = anchor_to_scroll(&self.layout, self.document(), anchor);
-        }
+        self.apply_layout(anchor);
+    }
+
+    /// Перестроить раскладку под текущую ширину переноса и вернуть якорь на место.
+    fn apply_layout(&mut self, anchor: Anchor) {
+        self.layout = Layout::new(self.document(), self.wrap_width());
+        self.scroll = anchor_to_scroll(&self.layout, self.document(), anchor);
+    }
+
+    /// Клавиши `[`/`]`: уже/шире колонку с сохранением позиции чтения.
+    fn resize_column(&mut self, delta: i16) {
+        self.col_extra = self.col_extra.saturating_add(delta);
+        let anchor = self.anchor();
+        self.apply_layout(anchor);
     }
 
     /// Переключиться на вариант `index`. Якорь переводится через базу, поэтому
@@ -341,8 +383,7 @@ impl App {
         }
         let anchor = self.translate(self.anchor(), index);
         self.current = index;
-        self.layout = Layout::new(self.document(), self.width.saturating_sub(TEXT_PAD));
-        self.scroll = anchor_to_scroll(&self.layout, self.document(), anchor);
+        self.apply_layout(anchor);
         true
     }
 
@@ -357,6 +398,10 @@ impl App {
             self.handle_typing(key);
         } else if self.screen == Screen::Shelf {
             self.handle_shelf_key(key);
+        } else if self.toc_open {
+            self.handle_toc_key(key);
+        } else if self.help_open {
+            self.handle_help_key(key);
         } else if self.bookmarks_open {
             self.handle_panel_key(key);
         } else {
@@ -392,8 +437,45 @@ impl App {
             KeyCode::Char('B') => self.toggle_bookmarks(),
             KeyCode::Char('n') => self.jump_bookmark(true),
             KeyCode::Char('p') => self.jump_bookmark(false),
+            KeyCode::Char('o') => self.open_toc(),
+            KeyCode::Char('?') => self.help_open = true,
+            KeyCode::Char('[') => self.resize_column(-COL_STEP),
+            KeyCode::Char(']') => self.resize_column(COL_STEP),
             _ => {}
         }
+    }
+
+    /// Оглавление: курсор ставится на текущий раздел.
+    fn open_toc(&mut self) {
+        let block = self.anchor().block;
+        self.toc_cursor =
+            self.document().toc().iter().rposition(|item| item.block <= block).unwrap_or(0);
+        self.toc_open = true;
+    }
+
+    fn handle_toc_key(&mut self, key: KeyEvent) {
+        let last = self.document().toc().len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('o') => self.toc_open = false,
+            KeyCode::Char('j') | KeyCode::Down => self.toc_cursor = (self.toc_cursor + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => self.toc_cursor = self.toc_cursor.saturating_sub(1),
+            KeyCode::Enter => {
+                self.toc_open = false;
+                if let Some(item) = self.document().toc().get(self.toc_cursor).cloned() {
+                    let base = self.translate(Anchor::at_block(item.block), 0);
+                    self.goto_anchor(base);
+                }
+            }
+            // `q` здесь не выходит из приложения — сначала закрой оглавление.
+            _ => {}
+        }
+    }
+
+    fn handle_help_key(&mut self, key: KeyEvent) {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
+            self.help_open = false;
+        }
+        // `q` в справке не выходит из приложения.
     }
 
     fn handle_shelf_key(&mut self, key: KeyEvent) {
