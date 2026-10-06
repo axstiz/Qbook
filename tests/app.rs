@@ -197,6 +197,24 @@ fn language_switching_stays_under_fifty_milliseconds() {
 }
 
 #[test]
+fn m2_opens_three_thousand_blocks_under_half_a_second() {
+    let tmp = dir();
+    let base = tmp.path().join("big.md");
+    let translation = tmp.path().join("big.ru.md");
+    let body = |prefix: &str| {
+        (0..3000).map(|i| format!("{prefix} абзац {i}")).collect::<Vec<_>>().join("\n\n")
+    };
+    write(&base, &body("base"));
+    write(&translation, &body("перевод"));
+
+    let start = Instant::now();
+    let app = App::load(&base, "en", &[], None).expect("загрузка");
+    let elapsed = start.elapsed();
+    assert_eq!(app.document().len(), 3000, "все абзацы на месте");
+    assert!(elapsed < Duration::from_millis(500), "M2: открытие заняло {elapsed:?}");
+}
+
+#[test]
 fn l_cycles_languages_and_out_of_range_keys_are_ignored() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 4);
