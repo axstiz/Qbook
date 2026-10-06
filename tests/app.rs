@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use qbook::app::App;
+use qbook::app::{App, InputPurpose};
 use qbook::store::Store;
 use tempfile::TempDir;
 
@@ -386,6 +386,56 @@ fn unknown_command_shows_a_toast() {
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.typing_purpose(), None, "prompt закрыт после команды");
     assert_eq!(app.notice(), Some(": нет команды «bogus»"), "тост об ошибке");
+}
+
+#[test]
+fn command_lang_switches_by_name_or_cycles() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 4);
+    let mut app = load(&base, None);
+
+    type_command(&mut app, "lang ru");
+    assert_eq!(app.current_lang(), "ru", "lang ru переключает вариант");
+    assert!(app.notice().is_some_and(|n| n.contains("ru")), "тост: {:?}", app.notice());
+
+    type_command(&mut app, "lang t");
+    assert_eq!(app.current_lang(), "en", "lang t — цикл обратно");
+}
+
+#[test]
+fn command_goto_jumps_to_the_block() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 26);
+    let mut app = load(&base, None);
+
+    type_command(&mut app, "goto 20");
+    assert_eq!(app.anchor().block, 19, "goto 20 → блок 20 (индекс 19)");
+    assert!(app.notice().is_some_and(|n| n.contains("20")), "тост: {:?}", app.notice());
+
+    type_command(&mut app, "goto 99");
+    assert!(app.notice().is_some_and(|n| n.contains("99")), "нет блока 99: {:?}", app.notice());
+}
+
+#[test]
+fn command_open_loads_a_path() {
+    let tmp = dir();
+    let loaded = tmp.path().join("loaded.md");
+    write(&loaded, "target");
+    let base = book_pair(tmp.path(), 4);
+    let mut app = load(&base, None);
+
+    type_command(&mut app, &format!("open {}", loaded.display()));
+    assert_eq!(app.title(), "loaded", "открыта другая книга");
+    assert!(app.notice().is_some_and(|n| n.contains("loaded")), "тост: {:?}", app.notice());
+}
+
+fn type_command(app: &mut App, text: &str) {
+    app.handle_key(key(KeyCode::Char(':')));
+    assert_eq!(app.typing_purpose(), Some(InputPurpose::Command), "prompt команды");
+    for c in text.chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(key(KeyCode::Enter));
 }
 
 #[test]

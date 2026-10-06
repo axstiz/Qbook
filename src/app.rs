@@ -665,7 +665,8 @@ impl App {
     /// Диспетчер ex-команд. Пустая строка закрывает prompt без действия.
     /// Возвращает тост: подтверждение либо ошибку.
     fn handle_command(&mut self, command: &str) -> Option<String> {
-        match command {
+        let (name, arg) = command.split_once(' ').map_or((command, ""), |(a, b)| (a, b.trim()));
+        match name {
             "" => None,
             "shelf" => {
                 self.go_shelf();
@@ -675,7 +676,66 @@ impl App {
                 self.quit = true;
                 None
             }
+            "b" => {
+                self.add_bookmark();
+                None
+            }
+            "lang" => self.command_lang(arg),
+            "goto" => self.command_goto(arg),
+            "open" => self.command_open(arg),
             other => Some(format!(": нет команды «{other}»")),
+        }
+    }
+
+    fn command_lang(&mut self, arg: &str) -> Option<String> {
+        if arg.is_empty() || arg == "t" {
+            if self.next_lang() {
+                Some(format!(": язык · {}", self.current_lang()))
+            } else {
+                None
+            }
+        } else if let Some(index) = self.variants.iter().position(|v| v.lang == arg) {
+            if self.switch_lang(index) {
+                Some(format!(": язык · {arg}"))
+            } else {
+                Some(format!(": нет языка «{arg}»"))
+            }
+        } else {
+            Some(format!(": нет языка «{arg}»"))
+        }
+    }
+
+    fn command_goto(&mut self, arg: &str) -> Option<String> {
+        let Ok(n) = arg.parse::<usize>() else {
+            return Some(": goto нужен номер блока".to_owned());
+        };
+        if n == 0 || n > self.document().len() {
+            return Some(format!(": нет блока {n}"));
+        }
+        self.goto_anchor(Anchor::at_block(n - 1));
+        Some(format!(": блок {n}"))
+    }
+
+    fn command_open(&mut self, arg: &str) -> Option<String> {
+        if arg.is_empty() {
+            return Some(": open нужен путь".to_owned());
+        }
+        let default_lang = self.default_lang.clone();
+        let path = Path::new(arg);
+        let store = match &self.store {
+            Some(store) => store.reopen().ok(),
+            None => None,
+        };
+        match App::load(path, &default_lang, &[], store) {
+            Ok(mut app) => {
+                let title = app.title().to_owned();
+                let _ = self.register_book(path);
+                app.default_lang = default_lang;
+                *self = app;
+                self.set_notice(format!(": открыт «{title}»"));
+                None
+            }
+            Err(e) => Some(format!(": не открыть «{arg}» — {e}")),
         }
     }
 

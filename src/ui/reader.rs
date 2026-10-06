@@ -215,7 +215,8 @@ fn render_panel(
     title: &str,
     items: Vec<Line<'static>>,
 ) -> u16 {
-    let content_rows = items.len().min(bottom.saturating_sub(2) as usize);
+    let max_rows = bottom.saturating_sub(4) as usize;
+    let content_rows = items.len().min(max_rows);
     let height = (content_rows + 2) as u16;
     let y = bottom - height;
     let block = Block::bordered().border_type(BorderType::Rounded).title(Line::from(Span::styled(
@@ -285,6 +286,7 @@ const HELP: &[&str] = &[
     "j/k, Space, PgUp/PgDn, g/G — прокрутка",
     "Ctrl+D/U — полстраницы, колесо мыши",
     "1 — только текст, 2/Главы, 3/Заметки, 5/: команды",
+    "в : open <путь>, lang t|<код>, goto <N>, shelf, b, q",
     "t — язык, b — закладка, B — список, n/p — переход",
     "в списке: c/C — цвет дальше/назад, r — переименовать, D — удалить",
     "o — оглавление, Enter — к разделу",
