@@ -22,6 +22,11 @@ pub const TEXT_PAD: u16 = 5;
 /// Шаг клавиш `[`/`]`: уже/шире колонка, и её минимальная ширина.
 const COL_STEP: i16 = 4;
 const COL_MIN: u16 = 20;
+/// Ширины постоянных колонок и минимальная ширина центральной рамки — та же
+/// геометрия, что использует рендер `ui::reader`.
+pub const LEFT_W: u16 = 24;
+pub const RIGHT_W: u16 = 36;
+pub const MIN_CENTER: u16 = 18;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -48,6 +53,19 @@ pub enum InputPurpose {
     Command,
 }
 
+/// Какой блок получает клавиши в трёхколоночной btop-оболочке.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReaderFocus {
+    /// Центральный текст и чтение.
+    Text,
+    /// Левая колонка оглавления.
+    Toc,
+    /// Правая колонка, список заметок.
+    Bookmarks,
+    /// Правая колонка, список команд.
+    Commands,
+}
+
 /// Минимальная высота для полной btop-оболочки; ниже — компактный рендер
 /// статус-баром.
 const MIN_UI_HEIGHT: u16 = 6;
@@ -55,6 +73,15 @@ const MIN_UI_HEIGHT: u16 = 6;
 /// Имена семи цветов заметки — их показывает тост при перекраске.
 const NOTE_COLOR_NAMES: [&str; 7] =
     ["красный", "зелёный", "жёлтый", "синий", "пурпурный", "голубой", "белый"];
+/// Список полезных команд для правой колонки «Команды»: имя, аргументы, смысл.
+pub const COMMANDS: &[(&str, &str, &str)] = &[
+    ("open", "<путь>", "открыть книгу"),
+    ("lang", "t|<код>", "язык по кругу / по коду"),
+    ("goto", "<блок>", "перейти к блоку"),
+    ("shelf", "", "полка"),
+    ("b", "", "закладка здесь"),
+    ("q", "", "выход"),
+];
 /// Сколько тиков автосохранения живёт тост (~2.5 секунды).
 const NOTICE_TICKS: u8 = 5;
 
@@ -79,6 +106,8 @@ struct Typing {
     bookmark_id: Option<i64>,
     /// Якорь, на который вешается новая заметка.
     anchor: Option<Anchor>,
+    /// Выбранный цвет создаваемой заметки (`c`/`C` в окне ввода).
+    color: u8,
 }
 
 struct Variant {
@@ -108,10 +137,15 @@ pub struct App {
     typing: Option<Typing>,
     /// Кэш закладок текущей книги, отсортирован по позиции.
     bookmarks: Vec<Bookmark>,
-    bookmarks_open: bool,
     bookmark_cursor: usize,
-    toc_open: bool,
+    /// Постоянные колонки btop-оболочки: слева главы, справа заметки/команды.
+    show_toc: bool,
+    show_bookmarks: bool,
+    show_commands: bool,
     toc_cursor: usize,
+    command_cursor: usize,
+    /// Какой блок получает клавиши.
+    focus: ReaderFocus,
     help_open: bool,
     /// Смещение ширины переноса от автоширины (клавиши `[`/`]`).
     col_extra: i16,
@@ -135,6 +169,17 @@ impl App {
 
         let mut specs: Vec<(String, PathBuf)> =
             find_sidecars(path).into_iter().filter(|(lang, _)| lang != base_lang).collect();
+        // Один вариант на язык: при дубле предпочитаем сайдкар с расширением
+        // исходной книги (`book.ru.md` для `book.md`), далее — по алфавиту имени.
+        let ext = path.extension().and_then(|e| e.to_str());
+        specs.sort_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| {
+                let same_a = usize::from(a.1.extension().and_then(|e| e.to_str()) == ext);
+                let same_b = usize::from(b.1.extension().and_then(|e| e.to_str()) == ext);
+                same_a.cmp(&same_b).reverse().then_with(|| a.1.cmp(&b.1))
+            })
+        });
+        specs.dedup_by_key(|(lang, _)| lang.clone());
         for (lang, file) in extra {
             if lang == base_lang {
                 continue;
@@ -205,10 +250,13 @@ impl App {
             shelf_error: None,
             typing: None,
             bookmarks: Vec::new(),
-            bookmarks_open: false,
             bookmark_cursor: 0,
-            toc_open: false,
+            show_toc: true,
+            show_bookmarks: true,
+            show_commands: true,
             toc_cursor: 0,
+            command_cursor: 0,
+            focus: ReaderFocus::Text,
             help_open: false,
             col_extra: 0,
             default_lang: base_lang.to_owned(),
@@ -241,10 +289,13 @@ impl App {
             shelf_error: None,
             typing: None,
             bookmarks: Vec::new(),
-            bookmarks_open: false,
             bookmark_cursor: 0,
-            toc_open: false,
+            show_toc: true,
+            show_bookmarks: true,
+            show_commands: true,
             toc_cursor: 0,
+            command_cursor: 0,
+            focus: ReaderFocus::Text,
             help_open: false,
             col_extra: 0,
             default_lang: default_lang.to_owned(),
@@ -283,31 +334,61 @@ impl App {
         &self.bookmarks
     }
 
-    pub fn bookmarks_open(&self) -> bool {
-        self.bookmarks_open
+    pub fn bookmarks_visible(&self) -> bool {
+        self.show_bookmarks
     }
 
     pub fn bookmark_cursor(&self) -> usize {
         self.bookmark_cursor
     }
 
-    pub fn toc_open(&self) -> bool {
-        self.toc_open
+    pub fn toc_visible(&self) -> bool {
+        self.show_toc
+    }
+
+    pub fn commands_visible(&self) -> bool {
+        self.show_commands
+    }
+
+    pub fn focus(&self) -> ReaderFocus {
+        self.focus
     }
 
     pub fn toc_cursor(&self) -> usize {
         self.toc_cursor
     }
 
+    pub fn command_cursor(&self) -> usize {
+        self.command_cursor
+    }
+
     pub fn help_open(&self) -> bool {
         self.help_open
     }
 
-    /// Ширина переноса: автоширина со смещением `[`/`]`, зажатая в разумных пределах.
+    /// Ширина рамки текста при текущих колонках — та же геометрия, что у рендера.
+    fn center_width(&self) -> u16 {
+        let full = self.width;
+        let right = self.bookmarks_visible() || self.commands_visible();
+        if self.toc_visible() && right && full >= LEFT_W + RIGHT_W + 2 + MIN_CENTER {
+            full - LEFT_W - RIGHT_W - 2
+        } else if self.toc_visible() && full >= LEFT_W + 1 + MIN_CENTER {
+            full - LEFT_W - 1
+        } else if right && full >= 1 + MIN_CENTER + RIGHT_W {
+            full - RIGHT_W - 1
+        } else {
+            full
+        }
+    }
+
+    /// Ширина переноса: текст занимает всю внутреннюю ширину рамки минус
+    /// скроллбар и максимальный отступ префиксов; `[`/`]` подстраивают вручную.
     pub fn wrap_width(&self) -> u16 {
-        let max = self.width.saturating_sub(2);
-        let low = COL_MIN.min(max);
-        self.width.saturating_sub(TEXT_PAD).saturating_add_signed(self.col_extra).clamp(low, max)
+        let inner = self.center_width().saturating_sub(2);
+        let max_wrap = inner.saturating_sub(1);
+        let low = COL_MIN.min(max_wrap);
+        let target = inner.saturating_sub(TEXT_PAD).saturating_add_signed(self.col_extra);
+        target.clamp(low, max_wrap)
     }
 
     /// Закладка на текущем блоке — её метку показывает статус-бар.
@@ -427,14 +508,17 @@ impl App {
             self.handle_typing(key);
         } else if self.screen == Screen::Shelf {
             self.handle_shelf_key(key);
-        } else if self.toc_open {
-            self.handle_toc_key(key);
         } else if self.help_open {
             self.handle_help_key(key);
-        } else if self.bookmarks_open {
-            self.handle_panel_key(key);
+        } else if self.panel_digit(key) {
+            // Цифры 1–4 переключают постоянные btop-колонки из любого фокуса.
         } else {
-            self.handle_reader_key(key);
+            match self.focus {
+                ReaderFocus::Text => self.handle_reader_key(key),
+                ReaderFocus::Toc => self.handle_toc_key(key),
+                ReaderFocus::Bookmarks => self.handle_bookmarks_key(key),
+                ReaderFocus::Commands => self.handle_commands_key(key),
+            }
         }
     }
 
@@ -458,11 +542,6 @@ impl App {
             KeyCode::Char('t') => {
                 self.next_lang();
             }
-            KeyCode::Char('1') => {
-                self.close_panels();
-            }
-            KeyCode::Char('2') | KeyCode::Char('o') => self.toggle_toc(),
-            KeyCode::Char('3') | KeyCode::Char('B') => self.toggle_bookmarks(),
             KeyCode::Char('5') | KeyCode::Char(':') => self.start_command(),
             KeyCode::Char('h') => self.go_shelf(),
             KeyCode::Char('b') => self.add_bookmark(),
@@ -475,50 +554,192 @@ impl App {
         }
     }
 
-    /// Оглавление: открыть, если закрыто (курсор на текущий раздел), иначе закрыть.
-    fn toggle_toc(&mut self) {
-        if self.toc_open {
-            self.toc_open = false;
-            return;
+    /// Цифры 1–4 (и алиасы `o`, `B`): показать-скрыть колонку и перевести на неё
+    /// фокус. Ещё раз по фокусной колонке — скрыть её.
+    /// Цифры 1–4 делают блок активным (фокус); `Shift+цифра` — показать/скрыть.
+    /// `o`/`B` — однобуквенные фокус-алиасы глав и заметок.
+    fn panel_digit(&mut self, key: KeyEvent) -> bool {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Char('1') if !shift => {
+                self.focus = ReaderFocus::Text;
+            }
+            KeyCode::Char('1') if shift => {
+                self.toggle_panels();
+            }
+            KeyCode::Char('!') => {
+                self.toggle_panels();
+            }
+            KeyCode::Char('2') if !shift => {
+                self.focus_toc();
+            }
+            KeyCode::Char('2') if shift => {
+                self.toggle_toc();
+            }
+            KeyCode::Char('o') => {
+                self.focus_toc();
+            }
+            KeyCode::Char('@') => {
+                self.toggle_toc();
+            }
+            KeyCode::Char('3') if !shift => {
+                self.focus_bookmarks();
+            }
+            KeyCode::Char('3') if shift => {
+                self.toggle_bookmarks();
+            }
+            KeyCode::Char('B') => {
+                self.focus_bookmarks();
+            }
+            KeyCode::Char('#') => {
+                self.toggle_bookmarks();
+            }
+            KeyCode::Char('4') if !shift => {
+                self.focus_commands();
+            }
+            KeyCode::Char('4') if shift => {
+                self.toggle_commands();
+            }
+            KeyCode::Char('$') => {
+                self.toggle_commands();
+            }
+            _ => return false,
         }
+        true
+    }
+
+    /// Shift+1: только текст ⇄ все колонки.
+    fn toggle_panels(&mut self) {
+        if self.show_toc || self.show_bookmarks || self.show_commands {
+            self.show_toc = false;
+            self.show_bookmarks = false;
+            self.show_commands = false;
+            self.focus = ReaderFocus::Text;
+        } else {
+            self.show_toc = true;
+            self.show_bookmarks = true;
+            self.show_commands = true;
+        }
+        self.reflow();
+    }
+
+    /// Цифра `2`: скрыть/показать главы, фокус не меняется.
+    fn toggle_toc(&mut self) {
+        self.show_toc = !self.show_toc;
+        if !self.show_toc && self.focus == ReaderFocus::Toc {
+            self.focus = ReaderFocus::Text;
+        }
+        if self.show_toc {
+            self.sync_toc_cursor();
+        }
+        self.reflow();
+    }
+
+    /// Shift+2: показать главы и встать в них курсором.
+    fn focus_toc(&mut self) {
+        let shown = self.show_toc;
+        self.show_toc = true;
+        self.sync_toc_cursor();
+        self.focus = ReaderFocus::Toc;
+        if !shown {
+            self.reflow();
+        }
+    }
+
+    /// Цифра `3`: скрыть/показать список заметок, фокус не меняется.
+    fn toggle_bookmarks(&mut self) {
+        self.show_bookmarks = !self.show_bookmarks;
+        if !self.show_bookmarks && self.focus == ReaderFocus::Bookmarks {
+            self.focus = ReaderFocus::Text;
+        }
+        if self.show_bookmarks {
+            self.reload_bookmarks();
+            self.sync_bookmark_cursor();
+        }
+        self.reflow();
+    }
+
+    /// Shift+3: показать заметки и встать в список.
+    fn focus_bookmarks(&mut self) {
+        let shown = self.show_bookmarks;
+        self.show_bookmarks = true;
+        self.reload_bookmarks();
+        self.sync_bookmark_cursor();
+        self.focus = ReaderFocus::Bookmarks;
+        if !shown {
+            self.reflow();
+        }
+    }
+
+    /// Цифра `4`: скрыть/показать список команд, фокус не меняется.
+    fn toggle_commands(&mut self) {
+        self.show_commands = !self.show_commands;
+        if !self.show_commands && self.focus == ReaderFocus::Commands {
+            self.focus = ReaderFocus::Text;
+        }
+        self.reflow();
+    }
+
+    /// Shift+4: показать команды и встать в список.
+    fn focus_commands(&mut self) {
+        let shown = self.show_commands;
+        self.show_commands = true;
+        self.focus = ReaderFocus::Commands;
+        if !shown {
+            self.reflow();
+        }
+    }
+
+    /// Перестроить раскладку под новую ширину колонок, сохранив позицию чтения.
+    fn reflow(&mut self) {
+        let anchor = self.anchor();
+        self.apply_layout(anchor);
+    }
+
+    /// Поставить курсор оглавления на раздел, в котором читаем.
+    fn sync_toc_cursor(&mut self) {
         let block = self.anchor().block;
         self.toc_cursor =
             self.document().toc().iter().rposition(|item| item.block <= block).unwrap_or(0);
-        self.toc_open = true;
     }
 
-    /// Цифра `1`: оставить только текст, закрыть боковые панели.
-    fn close_panels(&mut self) {
-        self.toc_open = false;
-        self.bookmarks_open = false;
+    /// Поставить курсор закладок на ближайшую к текущей позиции.
+    fn sync_bookmark_cursor(&mut self) {
+        let block = self.anchor().block;
+        self.bookmark_cursor = self
+            .bookmarks
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, b)| b.anchor.block.abs_diff(block))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
     }
 
-    /// Открыть командную строку ex-команд (`.5` или `:`).
+    /// Открыть командную строку ex-команд (`:` или `5`).
     fn start_command(&mut self) {
         self.typing = Some(Typing {
             purpose: InputPurpose::Command,
             buffer: String::new(),
             bookmark_id: None,
             anchor: None,
+            color: 0,
         });
     }
 
     fn handle_toc_key(&mut self, key: KeyEvent) {
         let last = self.document().toc().len().saturating_sub(1);
         match key.code {
-            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('2') => self.toc_open = false,
-            KeyCode::Char('1') => self.close_panels(),
-            KeyCode::Char('3') => self.toggle_bookmarks(),
+            KeyCode::Esc => self.focus = ReaderFocus::Text,
             KeyCode::Char('j') | KeyCode::Down => self.toc_cursor = (self.toc_cursor + 1).min(last),
             KeyCode::Char('k') | KeyCode::Up => self.toc_cursor = self.toc_cursor.saturating_sub(1),
             KeyCode::Enter => {
-                self.toc_open = false;
                 if let Some(item) = self.document().toc().get(self.toc_cursor).cloned() {
                     let base = self.translate(Anchor::at_block(item.block), 0);
                     self.goto_anchor(base);
                 }
+                self.focus = ReaderFocus::Text;
             }
-            // `q` здесь не выходит из приложения — сначала закрой оглавление.
+            // `q` здесь не выходит из приложения — сначала вернись к тексту.
             _ => {}
         }
     }
@@ -550,6 +771,7 @@ impl App {
                     buffer: String::new(),
                     bookmark_id: None,
                     anchor: None,
+                    color: 0,
                 });
             }
             KeyCode::Char('d') => self.delete_selected(),
@@ -557,13 +779,9 @@ impl App {
         }
     }
 
-    fn handle_panel_key(&mut self, key: KeyEvent) {
+    fn handle_bookmarks_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('B') | KeyCode::Char('3') | KeyCode::Char('q') => {
-                self.bookmarks_open = false;
-            }
-            KeyCode::Char('1') => self.close_panels(),
-            KeyCode::Char('2') => self.toggle_toc(),
+            KeyCode::Esc => self.focus = ReaderFocus::Text,
             KeyCode::Char('j') | KeyCode::Down => {
                 self.bookmark_cursor =
                     (self.bookmark_cursor + 1).min(self.bookmarks.len().saturating_sub(1));
@@ -574,7 +792,7 @@ impl App {
             KeyCode::Enter => {
                 if let Some(bookmark) = self.bookmarks.get(self.bookmark_cursor).cloned() {
                     self.goto_anchor(bookmark.anchor);
-                    self.bookmarks_open = false;
+                    self.focus = ReaderFocus::Text;
                 }
             }
             KeyCode::Char('r') => {
@@ -584,12 +802,39 @@ impl App {
                         buffer: String::new(),
                         bookmark_id: Some(bookmark.id),
                         anchor: None,
+                        color: 0,
                     });
                 }
             }
             KeyCode::Char('c') => self.recolor_by(1),
             KeyCode::Char('C') => self.recolor_by(-1),
             KeyCode::Char('D') => self.delete_selected_bookmark(),
+            _ => {}
+        }
+    }
+
+    /// Список полезных команд правой колонки: Enter подставляет команду в `:`.
+    fn handle_commands_key(&mut self, key: KeyEvent) {
+        let last = COMMANDS.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc => self.focus = ReaderFocus::Text,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.command_cursor = (self.command_cursor + 1).min(last);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.command_cursor = self.command_cursor.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let Some((name, args, _)) = COMMANDS.get(self.command_cursor) else {
+                    self.focus = ReaderFocus::Text;
+                    return;
+                };
+                self.start_command();
+                if let Some(typing) = &mut self.typing {
+                    typing.buffer =
+                        if args.is_empty() { name.to_string() } else { format!("{name} ") };
+                }
+            }
             _ => {}
         }
     }
@@ -606,12 +851,38 @@ impl App {
                     t.buffer.pop();
                 }
             }
+            // В окне создания заметки `c`/`C` выбирают цвет, а не набираются.
+            KeyCode::Char('c') | KeyCode::Char('C')
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(
+                        self.typing,
+                        Some(Typing { purpose: InputPurpose::NewBookmark, .. })
+                    ) =>
+            {
+                self.cycle_pending_color(if key.code == KeyCode::Char('c') { 1 } else { -1 });
+            }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(t) = &mut self.typing {
                     t.buffer.push(c);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Цикл цветов создаваемой заметки прямо в окне ввода.
+    fn cycle_pending_color(&mut self, step: i8) {
+        let Some(t) = &mut self.typing else { return };
+        let next = (i32::from(t.color) + i32::from(step)).rem_euclid(7) as u8;
+        t.color = next;
+        self.set_notice(format!("цвет: {}", NOTE_COLOR_NAMES[usize::from(next)]));
+    }
+
+    /// Выбранный цвет заметки в окне создания — для блока «Заметка».
+    pub fn pending_bookmark_color(&self) -> Option<u8> {
+        match &self.typing {
+            Some(Typing { purpose: InputPurpose::NewBookmark, color, .. }) => Some(*color),
+            _ => None,
         }
     }
 
@@ -630,6 +901,7 @@ impl App {
             }
             InputPurpose::RenameBookmark => {
                 if let Some(id) = typing.bookmark_id
+                    && !typing.buffer.trim().is_empty()
                     && let Some(store) = &self.store
                 {
                     let _ = store.rename_bookmark(id, &typing.buffer);
@@ -648,8 +920,9 @@ impl App {
                 } else {
                     typing.buffer.trim().chars().take(80).collect()
                 };
-                if store.add_bookmark(book_id, anchor, &label, DEFAULT_NOTE_COLOR).is_ok() {
+                if store.add_bookmark(book_id, anchor, &label, typing.color).is_ok() {
                     self.reload_bookmarks();
+                    self.sync_bookmark_cursor();
                     self.set_notice(format!("+ заметка: {label}"));
                 }
             }
@@ -824,28 +1097,10 @@ impl App {
     fn go_shelf(&mut self) {
         let _ = self.save_progress();
         self.screen = Screen::Shelf;
-        self.bookmarks_open = false;
         self.typing = None;
         self.shelf_error = None;
         self.bookmarks.clear();
         self.reload_shelf();
-    }
-
-    fn toggle_bookmarks(&mut self) {
-        if self.bookmarks_open {
-            self.bookmarks_open = false;
-            return;
-        }
-        self.reload_bookmarks();
-        let block = self.anchor().block;
-        self.bookmark_cursor = self
-            .bookmarks
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, b)| b.anchor.block.abs_diff(block))
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        self.bookmarks_open = true;
     }
 
     fn add_bookmark(&mut self) {
@@ -859,6 +1114,7 @@ impl App {
             buffer: String::new(),
             bookmark_id: None,
             anchor: Some(anchor),
+            color: DEFAULT_NOTE_COLOR,
         });
     }
 
@@ -904,6 +1160,28 @@ impl App {
     /// Цвет заметки на блоке — маркер▎ в тексте, если такая заметка есть.
     pub fn note_color(&self, block: usize) -> Option<u8> {
         self.bookmarks.iter().find(|b| b.anchor.block == block).map(|b| b.color)
+    }
+
+    /// Имя цвета заметки для блока «Заметка».
+    pub fn note_color_name(color: u8) -> &'static str {
+        NOTE_COLOR_NAMES[usize::from(color.min(6))]
+    }
+
+    /// Индекс раздела в оглавлении, в котором сейчас читается.
+    pub fn active_heading(&self) -> Option<usize> {
+        let block = self.anchor().block;
+        self.document().toc().iter().rposition(|item| item.block <= block)
+    }
+
+    /// Заметка для блока «Заметка»: при фокусе на списке — выбранная в нём,
+    /// иначе — ближайшая к позиции чтения.
+    pub fn selected_bookmark(&self) -> Option<&Bookmark> {
+        if self.focus == ReaderFocus::Bookmarks {
+            self.bookmarks.get(self.bookmark_cursor)
+        } else {
+            let block = self.anchor().block;
+            self.bookmarks.iter().min_by_key(|b| b.anchor.block.abs_diff(block))
+        }
     }
 
     /// Текст текущего тоста в статус-баре, если он ещё не погас.

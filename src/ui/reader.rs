@@ -1,5 +1,5 @@
-//! Рендер читалки: btop-оболочка — рамка текста со скруглёнными углами,
-//! метрики в заголовке, слот тоста/команд над клавиатурным баром.
+//! Рендер читалки: btop-оболочка — левая колонка глав, по центру рамка текста
+//! с метриками, справа заметки/заметка/команды; слот и бар внизу.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -9,17 +9,21 @@ use ratatui::widgets::{
     Block, BorderType, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::{App, InputPurpose};
+use crate::app::{App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus};
 use crate::model::{BlockKind, LineInfo};
 use crate::parse::txt::{list_marker, strip_heading};
 use crate::ui::note_color;
-use crate::ui::shelf::format_date;
+
+/// Высота блока «Заметка»: 2 борта + метка + подсказка.
+const NOTE_H: u16 = 4;
+/// Сколько команд показываем в блоке «Команды».
+const COMMANDS_MAX_ROWS: usize = 6;
 
 /// Ниже этого покрытия в заголовке рамки появляется бейдж качества.
 const QUALITY_WARN: f32 = 0.9;
 /// Хвост клавиатурного бара: подписанные клавиши после цифровых панелей.
 const BAR_WIDE_AT: u16 = 70;
-const BAR_HINT_WIDE: &str = " · t язык · h полка · ? справка · q выход";
+const BAR_HINT_WIDE: &str = " · t язык · Shift+1–4 вид · h полка · q выход";
 const BAR_HINT_NARROW: &str = " · t h ? q";
 /// Ширина панели прогресса в заголовке.
 const PROGRESS_CELLS: usize = 8;
@@ -37,10 +41,23 @@ pub fn render(app: &App, frame: &mut Frame) {
     let bar_y = area.y + area.height - 1;
     let slot_y = bar_y - 1;
     let frame_area = Rect { x: area.x, y: area.y, width: area.width, height: slot_y - area.y };
-    render_text(app, frame, frame_area);
+    let (left, center, right) = split_columns(
+        frame_area,
+        app.toc_visible(),
+        app.bookmarks_visible() || app.commands_visible(),
+    );
+    render_text(app, frame, center);
+    if let Some(left) = left {
+        render_toc(app, frame, left);
+    }
+    if let Some(right) = right {
+        render_right(app, frame, right);
+    }
     render_slot(app, frame, slot_y, area.width);
     render_bar(app, frame, area, bar_y);
-    render_panels(app, frame, area);
+    if app.help_open() {
+        render_help(frame, center);
+    }
 }
 
 /// Минимальный рендер для окна ниже шести строк: текст и status-строка.
@@ -51,6 +68,43 @@ fn render_compact(app: &App, frame: &mut Frame, area: Rect) {
     }
     let status_area = Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 };
     frame.render_widget(Paragraph::new(compact_status(app, area.width)), status_area);
+}
+
+/// Разбить верхнюю область на колонки. При малой ширине сначала прячется правая
+/// колонка, затем левая, остаётся только растянутый текст.
+fn split_columns(
+    area: Rect,
+    show_left: bool,
+    show_right: bool,
+) -> (Option<Rect>, Rect, Option<Rect>) {
+    let full = area.x + area.width;
+    if show_left && show_right && area.width >= LEFT_W + RIGHT_W + 2 + MIN_CENTER {
+        let left = Rect { x: area.x, y: area.y, width: LEFT_W, height: area.height };
+        let right = Rect { x: full - RIGHT_W, y: area.y, width: RIGHT_W, height: area.height };
+        let center = Rect {
+            x: area.x + LEFT_W + 1,
+            y: area.y,
+            width: area.width - LEFT_W - RIGHT_W - 2,
+            height: area.height,
+        };
+        (Some(left), center, Some(right))
+    } else if show_left && area.width >= LEFT_W + 1 + MIN_CENTER {
+        let left = Rect { x: area.x, y: area.y, width: LEFT_W, height: area.height };
+        let center = Rect {
+            x: area.x + LEFT_W + 1,
+            y: area.y,
+            width: area.width - LEFT_W - 1,
+            height: area.height,
+        };
+        (Some(left), center, None)
+    } else if show_right && area.width >= 1 + MIN_CENTER + RIGHT_W {
+        let right = Rect { x: full - RIGHT_W, y: area.y, width: RIGHT_W, height: area.height };
+        let center =
+            Rect { x: area.x, y: area.y, width: area.width - RIGHT_W - 1, height: area.height };
+        (None, center, Some(right))
+    } else {
+        (None, area, None)
+    }
 }
 
 fn render_text(app: &App, frame: &mut Frame, area: Rect) {
@@ -143,98 +197,103 @@ fn progress_bar(percent: f32) -> String {
     "▓".repeat(filled) + &"░".repeat(PROGRESS_CELLS - filled)
 }
 
-/// Слот над баром: командная строка, тост или пустая строка.
-fn render_slot(app: &App, frame: &mut Frame, y: u16, width: u16) {
-    let slot = Rect { x: 0, y, width, height: 1 };
-    let line = if let Some(buffer) = app.typing_buffer() {
-        let label = match app.typing_purpose() {
-            Some(InputPurpose::AddBook) => "Путь:",
-            Some(InputPurpose::Command) => ":",
-            _ => "Заметка:",
-        };
-        Some(Line::from(vec![
-            Span::styled(label, Style::new().add_modifier(Modifier::BOLD)),
-            Span::raw(format!(" {buffer}_")),
-        ]))
-    } else {
-        app.notice().map(|notice| Line::from(Span::styled(notice, Style::new().fg(Color::Green))))
-    };
-    frame.render_widget(Paragraph::new(line.unwrap_or_default()), slot);
-}
-
-/// Клавиатурный бар btop в нижней строке. Числовая панель подсвечивается
-/// жёлтым, когда открыта.
-fn render_bar(app: &App, frame: &mut Frame, area: Rect, y: u16) {
-    let bar_area = Rect { x: area.x, y, width: area.width, height: 1 };
-    let wide = area.width >= BAR_WIDE_AT;
-    let mut spans = Vec::new();
-    push_digit(&mut spans, "1", "Текст", true);
-    spans.push(Span::raw(" "));
-    push_digit(&mut spans, "2", "Главы", app.toc_open());
-    spans.push(Span::raw(" "));
-    push_digit(&mut spans, "3", "Заметки", app.bookmarks_open());
-    if wide {
-        spans.push(Span::raw(" "));
-        let command_active = app.typing_purpose() == Some(InputPurpose::Command);
-        push_digit(&mut spans, "5", "Команды", command_active);
-        let hint = BAR_HINT_WIDE;
-        spans.push(Span::styled(hint, Style::new().add_modifier(Modifier::DIM)));
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), bar_area);
-}
-
-/// Цифра панели и её подпись; активная — жёлтая.
-fn push_digit<'a>(spans: &mut Vec<Span<'a>>, digit: &'a str, name: &'a str, active: bool) {
-    let style = if active {
-        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().fg(Color::Cyan)
-    };
-    spans.push(Span::styled(format!("{digit}:{name}"), style));
-}
-
-fn render_panels(app: &App, frame: &mut Frame, area: Rect) {
-    let mut bottom = area.y + area.height - 2;
-    if app.bookmarks_open() {
-        bottom = render_bookmarks(app, frame, area.x, area.width, bottom);
-    }
-    if app.toc_open() {
-        bottom = render_toc(app, frame, area.x, area.width, bottom);
-    }
-    if app.help_open() {
-        render_help(frame, area.x, area.width, bottom);
-    }
-}
-
-/// Панель в рамке со скруглёнными углами: список строк + нижняя граница.
-fn render_panel(
-    frame: &mut Frame,
-    x: u16,
-    width: u16,
-    bottom: u16,
-    title: &str,
-    items: Vec<Line<'static>>,
-) -> u16 {
-    let max_rows = bottom.saturating_sub(4) as usize;
-    let content_rows = items.len().min(max_rows);
-    let height = (content_rows + 2) as u16;
-    let y = bottom - height;
-    let block = Block::bordered().border_type(BorderType::Rounded).title(Line::from(Span::styled(
+/// Рамка в правой колонке со скруглёнными углами и подписанным заголовком.
+fn block_frame(title: &str) -> Block<'static> {
+    Block::bordered().border_type(BorderType::Rounded).title(Line::from(Span::styled(
         title.to_string(),
         Style::new().add_modifier(Modifier::BOLD),
-    )));
-    let inner =
-        Rect { x: x + 1, y: y + 1, width: width.saturating_sub(2), height: content_rows as u16 };
-    frame.render_widget(Paragraph::new(items), inner);
-    frame.render_widget(block, Rect { x, y, width, height });
-    y
+    )))
 }
 
-fn render_bookmarks(app: &App, frame: &mut Frame, x: u16, width: u16, bottom: u16) -> u16 {
+/// Рамка с внутренней областью для одного из блоков среды колонки.
+fn inner_of(area: Rect) -> Rect {
+    Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    }
+}
+
+/// Левая колонка «Главы»: активный раздел подсвечен, навигационный курсор `►`.
+fn render_toc(app: &App, frame: &mut Frame, area: Rect) {
+    let inner = inner_of(area);
+    let items = app.document().toc();
+    let mut lines: Vec<Line> = Vec::new();
+    if items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Заголовков нет",
+            Style::new().add_modifier(Modifier::DIM),
+        )));
+    } else {
+        let nav = app.toc_cursor();
+        let active = app.active_heading().unwrap_or(0);
+        let anchor = if app.focus() == ReaderFocus::Toc { nav } else { active };
+        let rows = inner.height as usize;
+        let start = anchor.saturating_sub(rows.saturating_sub(1));
+        for (index, item) in items.iter().enumerate().skip(start).take(rows) {
+            let selected = index == nav;
+            let is_active = index == active;
+            let marker = if selected { "►" } else { " " };
+            let title_style = if is_active {
+                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            };
+            let indent = "  ".repeat(item.level.saturating_sub(1) as usize);
+            lines.push(Line::from(vec![
+                Span::styled(marker, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                Span::styled(format!("{indent}{}", item.title), title_style),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(block_frame(" Главы "), area);
+}
+
+/// Правая колонка: сверху список заметок, под ним блок «Заметка» (всегда) и
+/// внизу список команд.
+fn render_right(app: &App, frame: &mut Frame, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let note_h = NOTE_H.min(area.height);
+    let note_area =
+        Rect { x: area.x, y: area.y + area.height - note_h, width: area.width, height: note_h };
+    render_note(app, frame, note_area);
+    let mut above = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height.saturating_sub(note_h),
+    };
+    if app.commands_visible() && above.height >= 3 {
+        let cmds_height = (COMMANDS.len().min(COMMANDS_MAX_ROWS) as u16 + 2).min(above.height);
+        let cmds_area = Rect {
+            x: area.x,
+            y: above.y + above.height - cmds_height,
+            width: area.width,
+            height: cmds_height,
+        };
+        render_commands(app, frame, cmds_area);
+        above.height -= cmds_height;
+    }
+    if above.height > 0 {
+        render_bookmarks(app, frame, above);
+    }
+}
+
+/// Список заметок книги, упорядоченных по позиции, с курсором `►`.
+fn render_bookmarks(app: &App, frame: &mut Frame, area: Rect) {
+    let inner = inner_of(area);
     let bookmarks = app.bookmarks();
-    let rows = bookmarks.len().min(bottom.saturating_sub(2).saturating_sub(1) as usize);
+    let rows = inner.height as usize;
     let start = app.bookmark_cursor().saturating_sub(rows.saturating_sub(1));
-    let mut lines = Vec::with_capacity(rows);
+    let mut lines: Vec<Line> = Vec::new();
+    if bookmarks.is_empty() {
+        lines.push(Line::from(Span::styled("— пусто", Style::new().add_modifier(Modifier::DIM))));
+    }
     for (index, bookmark) in bookmarks.iter().enumerate().skip(start).take(rows) {
         let selected = index == app.bookmark_cursor();
         let (marker, style) = if selected {
@@ -243,62 +302,172 @@ fn render_bookmarks(app: &App, frame: &mut Frame, x: u16, width: u16, bottom: u1
             (" ", Style::new())
         };
         lines.push(Line::from(vec![
-            Span::styled(marker, style),
+            Span::styled(marker, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             Span::styled(" ", style),
             Span::styled("● ", Style::new().fg(note_color(bookmark.color))),
             Span::styled(bookmark.label.clone(), style),
             Span::styled(format!(" · {}", format_date(bookmark.created_at)), style),
         ]));
     }
-    render_panel(frame, x, width, bottom, "Заметки", lines)
+    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(block_frame(" Заметки "), area);
 }
 
-fn render_toc(app: &App, frame: &mut Frame, x: u16, width: u16, bottom: u16) -> u16 {
-    let items = app.document().toc();
-    if items.is_empty() {
-        let lines = vec![Line::from(Span::styled(
-            "Заголовков нет",
-            Style::new().add_modifier(Modifier::DIM),
-        ))];
-        return render_panel(frame, x, width, bottom, "Главы", lines);
+/// Блок «Заметка»: всегда на виду. Показывает заметку на позиции чтения
+/// (или выбранную в списке), а при вводе `b`/`r` — буфер и выбор цвета.
+fn render_note(app: &App, frame: &mut Frame, area: Rect) {
+    let inner = inner_of(area);
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(buffer) = app.typing_buffer() {
+        let purpose = app.typing_purpose();
+        let editing =
+            matches!(purpose, Some(InputPurpose::RenameBookmark | InputPurpose::NewBookmark));
+        if editing {
+            lines.push(Line::from(vec![
+                Span::styled("▸ ", Style::new().add_modifier(Modifier::BOLD)),
+                Span::raw(format!("{buffer}_")),
+            ]));
+            if let Some(color) = app.pending_bookmark_color() {
+                lines.push(Line::from(vec![
+                    Span::styled("● ", Style::new().fg(note_color(color))),
+                    Span::raw(format!("цвет · {} · c/C · Enter", App::note_color_name(color))),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "Enter — сохранить · Esc — отмена",
+                    Style::new().add_modifier(Modifier::DIM),
+                )));
+            }
+        }
     }
-    let rows = items.len().min(bottom.saturating_sub(2).saturating_sub(1) as usize);
-    let start = app.toc_cursor().saturating_sub(rows.saturating_sub(1));
-    let mut lines = Vec::with_capacity(rows);
-    for (index, item) in items.iter().enumerate().skip(start).take(rows) {
-        let selected = index == app.toc_cursor();
-        let (marker, style) = if selected {
-            ("►", Style::new().add_modifier(Modifier::BOLD))
-        } else {
-            (" ", Style::new())
-        };
-        let indent = "  ".repeat(item.level.saturating_sub(1) as usize);
+    if lines.is_empty()
+        && let Some(bookmark) = app.selected_bookmark()
+    {
         lines.push(Line::from(vec![
-            Span::styled(marker, style),
-            Span::styled(" ".to_owned(), style),
-            Span::styled(format!("{indent}{}", item.title), style),
+            Span::styled("● ", Style::new().fg(note_color(bookmark.color))),
+            Span::styled(bookmark.label.clone(), Style::new().add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("цвет · {} · r правка · c/C", App::note_color_name(bookmark.color)),
+            Style::new().add_modifier(Modifier::DIM),
+        )));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "нет заметок",
+            Style::new().add_modifier(Modifier::DIM),
+        )));
+        lines.push(Line::from(Span::raw("b — поставить здесь")));
+    }
+    lines.truncate(inner.height as usize);
+    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(block_frame(" Заметка "), area);
+}
+
+/// Список полезных команд: Enter подставляет выбранную в командную строку.
+fn render_commands(app: &App, frame: &mut Frame, area: Rect) {
+    let inner = inner_of(area);
+    let rows = inner.height as usize;
+    let start = app.command_cursor().saturating_sub(rows.saturating_sub(1));
+    let mut lines: Vec<Line> = Vec::new();
+    for (index, (name, args, help)) in COMMANDS.iter().enumerate().skip(start).take(rows) {
+        let selected = index == app.command_cursor();
+        let marker = if selected { "►" } else { " " };
+        let command = if args.is_empty() { name.to_string() } else { format!("{name} {args}") };
+        let name_style = if selected {
+            Style::new().add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().add_modifier(Modifier::DIM)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled(format!(":{command}"), name_style),
+            Span::styled(format!(" — {help}"), Style::new().add_modifier(Modifier::DIM)),
         ]));
     }
-    render_panel(frame, x, width, bottom, "Главы", lines)
+    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(block_frame(" Команды "), area);
+}
+
+/// Слот над баром: командная строка `:`, ввод метки заметки или тост.
+fn render_slot(app: &App, frame: &mut Frame, y: u16, width: u16) {
+    let slot = Rect { x: 0, y, width, height: 1 };
+    let line = if let Some(buffer) = app.typing_buffer() {
+        let label = match app.typing_purpose() {
+            Some(InputPurpose::Command) => ":",
+            _ => "Заметка:",
+        };
+        let mut spans = vec![
+            Span::styled(label, Style::new().add_modifier(Modifier::BOLD)),
+            Span::raw(format!(" {buffer}_")),
+        ];
+        if let Some(color) = app.pending_bookmark_color() {
+            spans.push(Span::styled(" ●", Style::new().fg(note_color(color))));
+        }
+        Some(Line::from(spans))
+    } else {
+        app.notice().map(|notice| Line::from(Span::styled(notice, Style::new().fg(Color::Green))))
+    };
+    frame.render_widget(Paragraph::new(line.unwrap_or_default()), slot);
+}
+
+/// Клавиатурный бар btop в нижней строке. Цифра подсвечивается жёлтым, когда
+/// соответствующая колонка включена.
+fn render_bar(app: &App, frame: &mut Frame, area: Rect, y: u16) {
+    let bar_area = Rect { x: area.x, y, width: area.width, height: 1 };
+    let wide = area.width >= BAR_WIDE_AT;
+    let mut spans = Vec::new();
+    push_digit(&mut spans, "1", "Текст", app.focus() == ReaderFocus::Text);
+    spans.push(Span::raw(" "));
+    push_digit(&mut spans, "2", "Главы", app.focus() == ReaderFocus::Toc);
+    spans.push(Span::raw(" "));
+    push_digit(&mut spans, "3", "Заметки", app.focus() == ReaderFocus::Bookmarks);
+    spans.push(Span::raw(" "));
+    push_digit(&mut spans, "4", "Команды", app.focus() == ReaderFocus::Commands);
+    if wide {
+        let hint = BAR_HINT_WIDE;
+        spans.push(Span::styled(hint, Style::new().add_modifier(Modifier::DIM)));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), bar_area);
+}
+
+/// Цифра и подпись блока: активный — ярко-белый, остальные — серые.
+fn push_digit<'a>(spans: &mut Vec<Span<'a>>, digit: &'a str, name: &'a str, active: bool) {
+    let style = if active {
+        Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(Color::DarkGray)
+    };
+    spans.push(Span::styled(format!("{digit}:{name}"), style));
+}
+
+/// Оверлей справки над слотом, не перекрывая метрики в заголовке центра.
+fn render_help(frame: &mut Frame, center: Rect) {
+    let max_rows = center.height.saturating_sub(4) as usize;
+    let height = (HELP.len().min(max_rows) + 2) as u16;
+    if height < 2 {
+        return;
+    }
+    let width = center.width.min(64);
+    let area = Rect { x: center.x, y: center.y + center.height - height, width, height };
+    let lines: Vec<Line> = HELP.iter().map(|text| Line::from(*text)).collect();
+    let inner =
+        Rect { x: area.x + 1, y: area.y + 1, width: width.saturating_sub(2), height: height - 2 };
+    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(block_frame(" Справка "), area);
 }
 
 const HELP: &[&str] = &[
     "j/k, Space, PgUp/PgDn, g/G — прокрутка",
-    "Ctrl+D/U — полстраницы, колесо мыши",
-    "1 — только текст, 2/Главы, 3/Заметки, 5/: команды",
+    "цифра 1–4 — фокус блока · Shift+цифра — показать/скрыть",
+    "2/o — оглавление · 3/B — заметки · 4 — команды · 1 — текст",
+    "заметки: b ввод, c/C цвет, r правка, D удалить, n/p переход",
     "в : open <путь>, lang t|<код>, goto <N>, shelf, b, q",
-    "t — язык, b — закладка, B — список, n/p — переход",
-    "в списке: c/C — цвет дальше/назад, r — переименовать, D — удалить",
-    "o — оглавление, Enter — к разделу",
-    "[ / ] — уже/шире колонку",
-    "h — полка, a — добавить, d — удалить",
-    "q — выход",
+    "в колонках: j/k — курсор, Enter — к разделу/заметке",
+    "[ / ] — уже/шире колонку · h — полка · ? — справка",
+    "заметка видна в блоке слева · Esc — к тексту · q — выход",
 ];
-
-fn render_help(frame: &mut Frame, x: u16, width: u16, bottom: u16) {
-    let lines: Vec<Line> = HELP.iter().map(|text| Line::from(*text)).collect();
-    render_panel(frame, x, width, bottom, "Справка", lines);
-}
 
 fn compact_status(app: &App, width: u16) -> Line<'static> {
     let total = app.document().len();
@@ -342,4 +511,9 @@ fn strip_marker(kind: BlockKind, text: &str) -> String {
         BlockKind::ListItem => list_marker(text).unwrap_or(text).to_owned(),
         _ => text.to_owned(),
     }
+}
+
+/// unix-время в UTC → `YYYY-MM-DD`.
+fn format_date(secs: i64) -> String {
+    crate::ui::shelf::format_date(secs)
 }

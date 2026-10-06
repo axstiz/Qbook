@@ -218,9 +218,15 @@ fn app_with_store_and_bookmarks() -> (TempDir, App) {
 #[test]
 fn bookmarks_panel_shows_labels_with_the_selection_bold() {
     let (_tmp, mut app) = app_with_store_and_bookmarks();
-    let (lines, buffer) = draw(&mut app, 50, 12);
+    // Скрываем команды (Shift+4), чтобы список занял всю правую колонку.
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('4'),
+        crossterm::event::KeyModifiers::SHIFT,
+    ));
+    let (lines, buffer) = draw(&mut app, 96, 12);
     let all = lines.join("\n");
     assert!(all.contains("Заметки"), "заголовок панели: {all}");
+    assert!(all.contains("Заметка"), "блок замечания: {all}");
     assert!(all.contains("Абзац номер 0"), "метка в панели: {all}");
     assert!(all.contains('●'), "цветная точка заметки в панели: {all}");
 
@@ -228,7 +234,7 @@ fn bookmarks_panel_shows_labels_with_the_selection_bold() {
         .iter()
         .position(|l| l.contains('►') && l.contains("Абзац"))
         .expect("выделенная строка панели");
-    let bold = (0..50u16)
+    let bold = (0..96u16)
         .any(|x| buffer[(x, selected_row as u16)].style().add_modifier.contains(Modifier::BOLD));
     assert!(bold, "выбранная закладка жирная");
 }
@@ -254,7 +260,7 @@ fn prompt_line_renders_typed_path() {
 fn title_highlights_the_bookmark_label() {
     let (_tmp, mut app) = app_with_store_and_bookmarks();
     app.set_scroll(0);
-    let (lines, _) = draw(&mut app, 60, 8);
+    let (lines, _) = draw(&mut app, 120, 8);
     let title = &lines[0];
     assert!(title.contains("Абзац номер 0"), "метка закладки в заголовке: {title}");
 }
@@ -303,18 +309,47 @@ fn note_prompt_renders_its_label() {
 }
 
 #[test]
-fn bar_highlights_the_digit_of_the_open_panel() {
+fn bar_highlights_the_digit_of_the_active_block() {
     let mut app = app_of(&paragraphs(30));
-    app.set_size(60, 10);
+    app.set_size(80, 10);
+    let bar_row = 9u16;
+    let digit_at = |lines: &[String], digit: char| {
+        lines[bar_row as usize].chars().position(|c| c == digit).expect("цифра в баре") as u16
+    };
+    let fg = |buffer: &ratatui::buffer::Buffer, x: u16| buffer[(x, bar_row)].style().fg;
+
+    let (lines, buffer) = screen(&mut app, 80, 10);
+    let idx = digit_at(&lines, '2');
+    assert_eq!(fg(&buffer, idx), Some(ratatui::style::Color::DarkGray), "неактивная цифра серая");
+
     app.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('2'),
         crossterm::event::KeyModifiers::NONE,
     ));
-    let (_, buffer) = draw(&mut app, 60, 10);
-    let bar_row = 9u16;
-    let yellow =
-        (0..60u16).any(|x| buffer[(x, bar_row)].style().fg == Some(ratatui::style::Color::Yellow));
-    assert!(yellow, "цифра открытой панели подсвечена в баре");
+    let (lines, buffer) = screen(&mut app, 80, 10);
+    let idx = digit_at(&lines, '2');
+    assert_eq!(fg(&buffer, idx), Some(ratatui::style::Color::White), "активная цифра белая");
+    let text_idx = digit_at(&lines, '1');
+    assert_eq!(fg(&buffer, text_idx), Some(ratatui::style::Color::DarkGray), "текст стал серым");
+}
+
+#[test]
+fn wide_window_shows_columns_and_highlights_the_active_heading() {
+    let mut app = app_of(
+        "# Раздел 1\n\nпервый абзац\n\n## Раздел 2\n\nвторой абзац\n\n# Раздел 3\n\nтретий абзац",
+    );
+    app.set_size(120, 16);
+    let (lines, buffer) = screen(&mut app, 120, 16);
+    let all = lines.join("\n");
+    for title in ["Главы", "Заметки", "Заметка", "Команды"] {
+        assert!(all.contains(title), "колонка «{title}» на экране: {all}");
+    }
+
+    let cyan = (0..24u16).flat_map(|x| (0..16u16).map(move |y| (x, y))).any(|(x, y)| {
+        buffer[(x, y)].symbol() == "Р"
+            && buffer[(x, y)].style().fg == Some(ratatui::style::Color::Cyan)
+    });
+    assert!(cyan, "активная глава подсвечена голубым в левой колонке");
 }
 
 #[test]
@@ -340,12 +375,12 @@ fn toc_overlay_lists_headings_above_the_slot() {
 #[test]
 fn help_overlay_shows_bindings_and_keeps_status_visible() {
     let mut app = app_of(&paragraphs(10));
-    app.set_size(50, 14);
+    app.set_size(40, 14);
     app.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('?'),
         crossterm::event::KeyModifiers::NONE,
     ));
-    let (lines, _) = draw(&mut app, 50, 14);
+    let (lines, _) = draw(&mut app, 40, 14);
     let all = lines.join("\n");
     assert!(all.contains("Справка"), "заголовок справки: {all}");
     assert!(all.contains("оглавление"), "строка об оглавлении: {all}");

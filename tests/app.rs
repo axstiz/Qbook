@@ -66,6 +66,30 @@ fn explicit_variant_beats_the_sidecar_with_the_same_language() {
 }
 
 #[test]
+fn several_sidecars_of_one_language_become_a_single_variant_with_the_base_extension() {
+    let tmp = dir();
+    let base = tmp.path().join("book.md");
+    write(&base, "# Заголовок\n\nбазовый текст\n\nповтор");
+    write(&tmp.path().join("book.ru.md"), "перевод в md");
+    write(&tmp.path().join("book.ru.txt"), "перевод в txt");
+    let mut app = load(&base, None);
+    assert_eq!(app.languages(), ["en", "ru"], "один вариант на язык");
+
+    app.switch_lang(1);
+    assert!(
+        app.document().blocks().iter().any(|b| b.text.contains("перевод в md")),
+        "сайдкар с расширением исходника побеждает: {:?}",
+        app.document().blocks().iter().map(|b| b.text.as_str()).collect::<Vec<_>>()
+    );
+
+    let mut app = load(&base, None);
+    for expected in ["ru", "en", "ru"] {
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.current_lang(), expected, "клавиша t по кругу без дублей");
+    }
+}
+
+#[test]
 fn load_registers_the_book_in_the_store() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 1);
@@ -232,16 +256,16 @@ fn toc_book(dir: &Path) -> PathBuf {
 }
 
 #[test]
-fn o_opens_toc_with_cursor_on_current_heading_and_enter_jumps() {
+fn o_focuses_toc_with_cursor_on_current_heading_and_enter_jumps() {
     let tmp = dir();
     let base = toc_book(tmp.path());
     let mut app = load(&base, None);
     app.set_size(60, 12);
     assert_eq!(app.document().toc().len(), 3, "три заголовка");
-    assert!(!app.toc_open());
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Text);
 
     app.handle_key(key(KeyCode::Char('o')));
-    assert!(app.toc_open(), "оглавление открыто");
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Toc, "фокус на колонке глав");
     assert_eq!(app.toc_cursor(), 0, "курсор на текущем разделе");
 
     app.handle_key(key(KeyCode::Char('j')));
@@ -252,7 +276,7 @@ fn o_opens_toc_with_cursor_on_current_heading_and_enter_jumps() {
     assert_eq!(app.toc_cursor(), 0, "верх списка зажат");
 
     app.handle_key(key(KeyCode::Enter));
-    assert!(!app.toc_open(), "Enter закрывает оглавление");
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Text, "Enter возвращает к тексту");
     assert_eq!(app.anchor().block, 0, "прыжок к первому заголовку");
 
     app.set_size(60, 2);
@@ -264,7 +288,7 @@ fn o_opens_toc_with_cursor_on_current_heading_and_enter_jumps() {
 
     app.handle_key(key(KeyCode::Char('o')));
     app.handle_key(key(KeyCode::Esc));
-    assert!(!app.toc_open(), "Esc закрывает оглавление");
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Text, "Esc возвращает к тексту");
 }
 
 #[test]
@@ -290,10 +314,10 @@ fn toc_over_empty_document_is_safe() {
     assert!(app.document().toc().is_empty(), "заголовков нет");
 
     app.handle_key(key(KeyCode::Char('o')));
-    assert!(app.toc_open(), "пустое оглавление тоже открывается");
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Toc, "пустая колонка тоже фокусируется");
     app.handle_key(key(KeyCode::Char('j')));
     app.handle_key(key(KeyCode::Enter));
-    assert!(!app.toc_open(), "Enter закрывает пустое оглавление");
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Text);
     assert_eq!(app.scroll(), 0, "прыжка не было");
 }
 
@@ -321,7 +345,7 @@ fn q_exits_only_when_no_overlay_is_open() {
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('o')));
     app.handle_key(key(KeyCode::Char('q')));
-    assert!(!app.should_quit(), "q в оглавлении не выходит");
+    assert!(!app.should_quit(), "q в фокусе глав не выходит");
     app.handle_key(key(KeyCode::Esc));
     app.handle_key(key(KeyCode::Char('q')));
     assert!(app.should_quit(), "q в читалке выходит");
@@ -336,26 +360,77 @@ fn q_exits_only_when_no_overlay_is_open() {
 }
 
 #[test]
-fn digits_toggle_panels_and_one_keeps_only_the_text() {
+fn digits_focus_panels_and_shift_digits_toggle_them() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 4);
     let mut app = load(&base, None);
+    use qbook::app::ReaderFocus;
+    assert!(
+        app.toc_visible() && app.bookmarks_visible() && app.commands_visible(),
+        "колонки включены по умолчанию"
+    );
+
+    let shift = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
 
     app.handle_key(key(KeyCode::Char('2')));
-    assert!(app.toc_open(), "цифра 2 открывает главы");
-    app.handle_key(key(KeyCode::Char('2')));
-    assert!(!app.toc_open(), "повторная 2 закрывает главы");
+    assert_eq!(app.focus(), ReaderFocus::Toc, "цифра 2 фокусирует главы");
+
+    app.handle_key(shift('2'));
+    assert!(!app.toc_visible(), "Shift+2 скрывает главы");
+    assert_eq!(app.focus(), ReaderFocus::Text, "фокус вернулся к тексту");
+    app.handle_key(shift('2'));
+    assert!(app.toc_visible(), "повторный Shift+2 показывает главы");
 
     app.handle_key(key(KeyCode::Char('3')));
-    assert!(app.bookmarks_open(), "цифра 3 открывает панель заметок");
-    app.handle_key(key(KeyCode::Char('3')));
-    assert!(!app.bookmarks_open(), "повторная 3 закрывает заметки");
+    assert_eq!(app.focus(), ReaderFocus::Bookmarks, "цифра 3 фокусирует заметки");
+    app.handle_key(shift('3'));
+    assert!(!app.bookmarks_visible(), "Shift+3 скрывает заметки");
+    app.handle_key(shift('3'));
+    assert!(app.bookmarks_visible(), "повторный Shift+3 показывает заметки");
 
-    app.handle_key(key(KeyCode::Char('2')));
-    app.handle_key(key(KeyCode::Char('3')));
-    assert!(app.toc_open() && app.bookmarks_open(), "2 и 3 открыли панели");
+    app.handle_key(key(KeyCode::Char('4')));
+    assert_eq!(app.focus(), ReaderFocus::Commands, "цифра 4 фокусирует команды");
+    app.handle_key(shift('4'));
+    assert!(!app.commands_visible(), "Shift+4 скрывает команды");
+    app.handle_key(shift('4'));
+    assert!(app.commands_visible(), "повторный Shift+4 показывает команды");
+
     app.handle_key(key(KeyCode::Char('1')));
-    assert!(!app.toc_open() && !app.bookmarks_open(), "1 оставляет только текст");
+    assert_eq!(app.focus(), ReaderFocus::Text, "цифра 1 возвращает к тексту");
+
+    app.handle_key(shift('1'));
+    assert!(
+        !app.toc_visible() && !app.bookmarks_visible() && !app.commands_visible(),
+        "Shift+1 оставляет только текст"
+    );
+    assert_eq!(app.focus(), ReaderFocus::Text);
+    app.handle_key(shift('1'));
+    assert!(
+        app.toc_visible() && app.bookmarks_visible() && app.commands_visible(),
+        "повторный Shift+1 возвращает колонки"
+    );
+}
+
+#[test]
+fn text_wraps_to_the_current_column_width() {
+    let tmp = dir();
+    let base = tmp.path().join("book.md");
+    let long = "Очень длинный абзац про прогулку по вечернему городу, ".repeat(6);
+    let body = (0..5).map(|i| format!("{long}{i}")).collect::<Vec<_>>().join("\n\n");
+    write(&base, &body);
+
+    let mut app = load(&base, None);
+    app.set_size(60, 10);
+    let shift = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+    // 60 − левая 24 − прочие 2 = 35 рамка; внутри минус борта (2) и запас (5).
+    assert_eq!(app.layout().width(), 28, "перенос по фактической ширине центра");
+
+    app.handle_key(shift('4'));
+    app.handle_key(shift('3'));
+    assert_eq!(app.layout().width(), 28, "левая колонка ещё стоит");
+
+    app.handle_key(shift('2'));
+    assert_eq!(app.layout().width(), 53, "без колонок текст на всю ширину 60−2−5");
 }
 
 #[test]

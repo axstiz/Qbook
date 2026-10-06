@@ -92,7 +92,7 @@ fn c_cycles_through_the_note_colors_in_the_panel() {
     app.handle_key(key(KeyCode::Char('b')));
     app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Char('B')));
-    assert!(app.bookmarks_open());
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Bookmarks, "B фокусирует заметки");
 
     let initial = app.bookmarks()[0].color;
     app.handle_key(key(KeyCode::Char('c')));
@@ -124,12 +124,16 @@ fn bookmarks_without_a_store_are_noops() {
     app.handle_key(key(KeyCode::Char('p')));
     app.handle_key(key(KeyCode::Char('D')));
     assert!(app.bookmarks().is_empty());
-    assert!(!app.bookmarks_open(), "без store список не открывается сам");
+    assert!(app.bookmarks_visible(), "колонка заметок включена по умолчанию");
 
     app.handle_key(key(KeyCode::Char('B')));
-    assert!(app.bookmarks_open(), "панель открыта даже пустой");
-    app.handle_key(key(KeyCode::Char('B')));
-    assert!(!app.bookmarks_open(), "B переключает");
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Bookmarks, "B фокусирует даже пустой список");
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('3'),
+        crossterm::event::KeyModifiers::SHIFT,
+    ));
+    assert!(!app.bookmarks_visible(), "Shift+3 скрывает заметки");
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Text);
 }
 
 #[test]
@@ -146,15 +150,16 @@ fn panel_walks_the_cursor_and_closes_on_esc() {
 
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('B')));
-    assert!(app.bookmarks_open());
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Bookmarks);
     assert_eq!(app.bookmark_cursor(), 0);
     app.handle_key(key(KeyCode::Char('j')));
     assert_eq!(app.bookmark_cursor(), 1);
     app.handle_key(key(KeyCode::Char('k')));
     assert_eq!(app.bookmark_cursor(), 0);
     app.handle_key(key(KeyCode::Esc));
-    assert!(!app.bookmarks_open());
-    assert!(!app.should_quit(), "Esc закрывает только панель");
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Text, "Esc возвращает к тексту");
+    assert!(app.bookmarks_visible(), "колонка остаётся на экране");
+    assert!(!app.should_quit(), "Esc не выходит из приложения");
 }
 
 #[test]
@@ -172,7 +177,7 @@ fn panel_enter_jumps_to_the_selected_bookmark() {
     app.handle_key(key(KeyCode::Char('B')));
     app.handle_key(key(KeyCode::Char('j')));
     app.handle_key(key(KeyCode::Enter));
-    assert!(!app.bookmarks_open(), "панель закрылась");
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Text, "Enter возвращает к тексту");
     assert!(app.scroll() > 0, "перешли к поздней закладке, scroll={}", app.scroll());
 }
 
