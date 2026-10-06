@@ -9,7 +9,7 @@ use crate::align::{Alignment, align};
 use crate::cli::find_sidecars;
 use crate::model::{Anchor, Document, Layout, anchor_to_scroll, scroll_to_anchor};
 use crate::parse;
-use crate::store::{Bookmark, Store, StoreError, document_hash};
+use crate::store::{Bookmark, DEFAULT_NOTE_COLOR, Store, StoreError, document_hash};
 
 /// Период автосохранения прогресса.
 const SAVE_INTERVAL: Duration = Duration::from_secs(5);
@@ -43,7 +43,14 @@ pub enum Screen {
 pub enum InputPurpose {
     AddBook,
     RenameBookmark,
+    NewBookmark,
 }
+
+/// Имена семи цветов заметки — их показывает тост при перекраске.
+const NOTE_COLOR_NAMES: [&str; 7] =
+    ["красный", "зелёный", "жёлтый", "синий", "пурпурный", "голубой", "белый"];
+/// Сколько тиков автосохранения живёт тост (~2.5 секунды).
+const NOTICE_TICKS: u8 = 5;
 
 /// Строка полки, готовая к отрисовке.
 #[derive(Debug, Clone)]
@@ -64,6 +71,8 @@ struct Typing {
     buffer: String,
     /// Какую закладку переименовываем.
     bookmark_id: Option<i64>,
+    /// Якорь, на который вешается новая заметка.
+    anchor: Option<Anchor>,
 }
 
 struct Variant {
@@ -102,6 +111,9 @@ pub struct App {
     col_extra: i16,
     /// Язык по умолчанию для книг, добавляемых через prompt.
     default_lang: String,
+    /// Тост в статус-баре и остаток его жизни в тиках.
+    notice: Option<String>,
+    notice_left: u8,
 }
 
 impl App {
@@ -169,7 +181,7 @@ impl App {
         }
 
         let layout = Layout::new(&variants[current].doc, DEFAULT_WIDTH - TEXT_PAD);
-        Ok(Self {
+        let mut app = Self {
             variants,
             current,
             scroll: 0,
@@ -194,7 +206,11 @@ impl App {
             help_open: false,
             col_extra: 0,
             default_lang: base_lang.to_owned(),
-        })
+            notice: None,
+            notice_left: 0,
+        };
+        app.reload_bookmarks();
+        Ok(app)
     }
 
     /// Полка: список книг из хранилища. Книга открывается клавишей `Enter`.
@@ -226,6 +242,8 @@ impl App {
             help_open: false,
             col_extra: 0,
             default_lang: default_lang.to_owned(),
+            notice: None,
+            notice_left: 0,
         };
         app.reload_shelf();
         Ok(app)
@@ -497,6 +515,7 @@ impl App {
                     purpose: InputPurpose::AddBook,
                     buffer: String::new(),
                     bookmark_id: None,
+                    anchor: None,
                 });
             }
             KeyCode::Char('d') => self.delete_selected(),
@@ -528,8 +547,12 @@ impl App {
                         purpose: InputPurpose::RenameBookmark,
                         buffer: String::new(),
                         bookmark_id: Some(bookmark.id),
+                        anchor: None,
                     });
                 }
+            }
+            KeyCode::Char(c @ '1'..='7') => {
+                self.recolor_selected(c as u8 - b'1');
             }
             KeyCode::Char('D') => self.delete_selected_bookmark(),
             _ => {}
@@ -578,6 +601,21 @@ impl App {
                     if let Some(bookmark) = self.bookmarks.iter_mut().find(|b| b.id == id) {
                         bookmark.label = typing.buffer;
                     }
+                }
+            }
+            InputPurpose::NewBookmark => {
+                let Some(store) = self.store.as_ref() else { return };
+                let Some(book_id) = self.book_id else { return };
+                let Some(anchor) = typing.anchor else { return };
+                let label = if typing.buffer.trim().is_empty() {
+                    let text = self.document().block(anchor.block).map_or("", |b| b.text.as_str());
+                    snippet(text)
+                } else {
+                    typing.buffer.trim().chars().take(80).collect()
+                };
+                if store.add_bookmark(book_id, anchor, &label, DEFAULT_NOTE_COLOR).is_ok() {
+                    self.reload_bookmarks();
+                    self.set_notice(format!("+ заметка: {label}"));
                 }
             }
         }
@@ -698,13 +736,12 @@ impl App {
         }
         self.resolve_pending();
         let anchor = self.anchor();
-        let text = self.document().block(anchor.block).map_or("", |b| b.text.as_str());
-        let label = snippet(text);
-        let store = self.store.as_ref().expect("store проверен");
-        let id = self.book_id.expect("book_id проверен");
-        if store.add_bookmark(id, anchor, &label).is_ok() {
-            self.reload_bookmarks();
-        }
+        self.typing = Some(Typing {
+            purpose: InputPurpose::NewBookmark,
+            buffer: String::new(),
+            bookmark_id: None,
+            anchor: Some(anchor),
+        });
     }
 
     fn reload_bookmarks(&mut self) {
@@ -724,6 +761,35 @@ impl App {
             let _ = store.delete_bookmark(id);
         }
         self.reload_bookmarks();
+    }
+
+    /// Перекрасить выбранную в панели заметку (`1..7`) и показать тост.
+    fn recolor_selected(&mut self, color: u8) {
+        let Some(bookmark) = self.bookmarks.get(self.bookmark_cursor) else { return };
+        let id = bookmark.id;
+        let color = color.min(6);
+        if let Some(store) = &self.store {
+            let _ = store.set_bookmark_color(id, color);
+        }
+        if let Some(bookmark) = self.bookmarks.iter_mut().find(|b| b.id == id) {
+            bookmark.color = color;
+        }
+        self.set_notice(format!("цвет: {}", NOTE_COLOR_NAMES[usize::from(color)]));
+    }
+
+    /// Цвет заметки на блоке — маркер▎ в тексте, если такая заметка есть.
+    pub fn note_color(&self, block: usize) -> Option<u8> {
+        self.bookmarks.iter().find(|b| b.anchor.block == block).map(|b| b.color)
+    }
+
+    /// Текст текущего тоста в статус-баре, если он ещё не погас.
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    fn set_notice(&mut self, text: String) {
+        self.notice = Some(text);
+        self.notice_left = NOTICE_TICKS;
     }
 
     /// Следующая (`forward`) или предыдущая закладка по позиции в базе.
@@ -788,8 +854,14 @@ impl App {
         Ok(())
     }
 
-    /// Периодический тик: раз в [`SAVE_INTERVAL`] пишем прогресс.
+    /// Периодический тик: раз в [`SAVE_INTERVAL`] пишем прогресс, тост угасает.
     pub fn tick(&mut self) -> Result<(), StoreError> {
+        if self.notice_left > 0 {
+            self.notice_left -= 1;
+            if self.notice_left == 0 {
+                self.notice = None;
+            }
+        }
         if self.last_save.elapsed() >= SAVE_INTERVAL {
             self.save_progress()?;
         }

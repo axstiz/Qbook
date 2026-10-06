@@ -10,6 +10,7 @@ use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarStat
 use crate::app::App;
 use crate::model::{BlockKind, LineInfo};
 use crate::parse::txt::{list_marker, strip_heading};
+use crate::ui::note_color;
 
 /// Ниже этого покрытия статус-бар подсвечивает качество выравнивания.
 const QUALITY_WARN: f32 = 0.9;
@@ -63,7 +64,13 @@ fn text_line(app: &App, info: &LineInfo) -> Line<'static> {
     } else {
         " ".repeat(pad)
     };
-    Line::from(vec![Span::styled(prefix, style), Span::styled(text, style)])
+    let mut spans = Vec::new();
+    if let Some(color) = app.note_color(info.block) {
+        spans.push(Span::styled("▎", Style::new().fg(note_color(color))));
+    }
+    spans.push(Span::styled(prefix, style));
+    spans.push(Span::styled(text, style));
+    Line::from(spans)
 }
 
 /// Отступ и маркер первого ряда по типу блока: продолжение блока получает
@@ -107,7 +114,13 @@ fn status_line(app: &App, width: u16) -> Line<'static> {
         ));
     }
     if let Some(bookmark) = app.bookmark_at() {
-        spans.push(Span::styled(format!(" · {}", bookmark.label), Style::new().fg(Color::Cyan)));
+        spans.push(Span::styled(
+            format!(" · {}", bookmark.label),
+            Style::new().fg(note_color(bookmark.color)),
+        ));
+    }
+    if let Some(notice) = app.notice() {
+        spans.push(Span::styled(format!(" · {notice}"), Style::new().fg(Color::Green)));
     }
     let hint = if width >= HINT_WIDE_AT { HINT_WIDE } else { HINT_NARROW };
     spans.push(Span::styled(hint, Style::new().add_modifier(Modifier::DIM)));

@@ -57,7 +57,13 @@ const MIGRATIONS: &[&str] = &[
     );
 ",
     "ALTER TABLE progress ADD COLUMN percent REAL NOT NULL DEFAULT 0.0",
+    "ALTER TABLE bookmarks ADD COLUMN color INTEGER NOT NULL DEFAULT 5",
 ];
+
+/// Индекс цвета заметки по умолчанию — голубой (см. палитру в `ui`).
+pub const DEFAULT_NOTE_COLOR: u8 = 5;
+/// Число цветов заметки: red, green, yellow, blue, magenta, cyan, white.
+pub const NOTE_COLOR_COUNT: u8 = 7;
 
 /// Кэшированная карта: сама карта и покрытие.
 pub type CachedAlignment = (Vec<Option<usize>>, f32);
@@ -109,6 +115,8 @@ pub struct Bookmark {
     pub book_id: i64,
     pub anchor: Anchor,
     pub label: String,
+    /// Индекс цвета из палитры [`NOTE_COLOR_COUNT`] — рисуется маркером заметки.
+    pub color: u8,
     pub created_at: i64,
 }
 
@@ -283,29 +291,35 @@ impl Store {
         book_id: i64,
         anchor: Anchor,
         label: &str,
+        color: u8,
     ) -> Result<i64, StoreError> {
+        let color = i64::from(color.min(NOTE_COLOR_COUNT - 1));
         self.conn.execute(
-            "INSERT INTO bookmarks (book_id, anchor_block, anchor_frac, label, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![book_id, anchor.block as i64, anchor.frac as f64, label, now()],
+            "INSERT INTO bookmarks (book_id, anchor_block, anchor_frac, label, created_at, color)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![book_id, anchor.block as i64, anchor.frac as f64, label, now(), color],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
 
     pub fn list_bookmarks(&self, book_id: i64) -> Result<Vec<Bookmark>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, book_id, anchor_block, anchor_frac, label, created_at
+            "SELECT id, book_id, anchor_block, anchor_frac, label, created_at, color
              FROM bookmarks WHERE book_id = ?1 ORDER BY id",
         )?;
         let marks = stmt
             .query_map([book_id], |row| {
                 let block: i64 = row.get(2)?;
                 let frac: f64 = row.get(3)?;
+                let color: i64 = row.get(6)?;
                 Ok(Bookmark {
                     id: row.get(0)?,
                     book_id: row.get(1)?,
                     anchor: Anchor::new(block as usize, frac as f32),
                     label: row.get(4)?,
+                    color: u8::try_from(color)
+                        .unwrap_or(DEFAULT_NOTE_COLOR)
+                        .min(NOTE_COLOR_COUNT - 1),
                     created_at: row.get(5)?,
                 })
             })?
@@ -315,6 +329,12 @@ impl Store {
 
     pub fn rename_bookmark(&self, id: i64, label: &str) -> Result<(), StoreError> {
         self.conn.execute("UPDATE bookmarks SET label = ?1 WHERE id = ?2", params![label, id])?;
+        Ok(())
+    }
+
+    pub fn set_bookmark_color(&self, id: i64, color: u8) -> Result<(), StoreError> {
+        let color = i64::from(color.min(NOTE_COLOR_COUNT - 1));
+        self.conn.execute("UPDATE bookmarks SET color = ?1 WHERE id = ?2", params![color, id])?;
         Ok(())
     }
 

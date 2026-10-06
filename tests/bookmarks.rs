@@ -43,13 +43,66 @@ fn b_places_a_bookmark_with_a_text_label() {
     app.set_size(40, 10);
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
+    assert_eq!(app.typing_buffer(), Some(""), "b открывает prompt заметки");
+    app.handle_key(key(KeyCode::Enter));
 
     assert_eq!(app.bookmarks().len(), 1, "закладка в памяти");
-    assert_eq!(app.bookmarks()[0].label, "Абзац номер 0", "метка — фрагмент абзаца");
+    assert_eq!(app.bookmarks()[0].label, "Абзац номер 0", "пустая заметка — фрагмент абзаца");
     assert_eq!(app.bookmarks()[0].anchor.block, 0);
+    assert_eq!(app.bookmarks()[0].color, 5, "цвет по умолчанию — голубой");
 
     let labels = store_bookmark_labels(&app, &path);
     assert_eq!(labels, vec!["Абзац номер 0".to_owned()], "закладка в БД");
+}
+
+#[test]
+fn typed_note_replaces_the_snippet() {
+    let (_tmp, path, mut app) = loaded(20);
+    app.set_size(40, 10);
+    app.set_scroll(0);
+    app.handle_key(key(KeyCode::Char('b')));
+    for c in "Мысль на полях".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(key(KeyCode::Enter));
+
+    assert_eq!(bookmark_labels(&app), vec!["Мысль на полях".to_owned()], "введённая заметка");
+    assert_eq!(store_bookmark_labels(&app, &path), vec!["Мысль на полях".to_owned()], "в БД");
+}
+
+#[test]
+fn notice_fades_after_ticks() {
+    let (_tmp, _path, mut app) = loaded(20);
+    app.set_size(40, 10);
+    app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
+    let notice = app.notice().expect("тост после заметки");
+    assert!(notice.contains("заметка"), "текст тоста: {notice}");
+
+    for _ in 0..6 {
+        app.tick().expect("тик");
+    }
+    assert!(app.notice().is_none(), "тост погас");
+}
+
+#[test]
+fn digits_recolor_the_note_in_the_panel() {
+    let (_tmp, path, mut app) = loaded(20);
+    app.set_size(40, 10);
+    app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Char('B')));
+    assert!(app.bookmarks_open());
+
+    app.handle_key(key(KeyCode::Char('3')));
+    assert_eq!(app.bookmarks()[0].color, 2, "3 — жёлтый");
+
+    app.handle_key(key(KeyCode::Char('7')));
+    assert_eq!(app.bookmarks()[0].color, 6, "7 — белый");
+
+    let store = app.store().expect("store");
+    let id = store.book_id(&path.display().to_string()).expect("id").expect("есть");
+    assert_eq!(store.list_bookmarks(id).expect("список")[0].color, 6, "цвет в БД");
 }
 
 #[test]
@@ -60,6 +113,7 @@ fn bookmarks_without_a_store_are_noops() {
     let mut app = App::load(&path, "en", &[], None).expect("загрузка");
 
     app.handle_key(key(KeyCode::Char('b')));
+    assert!(app.typing_buffer().is_none(), "без store prompt не открывается");
     app.handle_key(key(KeyCode::Char('n')));
     app.handle_key(key(KeyCode::Char('p')));
     app.handle_key(key(KeyCode::Char('D')));
@@ -78,8 +132,10 @@ fn panel_walks_the_cursor_and_closes_on_esc() {
     app.set_size(40, 10);
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(app.max_scroll());
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.bookmarks().len(), 2);
 
     app.set_scroll(0);
@@ -101,8 +157,10 @@ fn panel_enter_jumps_to_the_selected_bookmark() {
     app.set_size(40, 10);
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(app.max_scroll());
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(0);
 
     app.handle_key(key(KeyCode::Char('B')));
@@ -118,8 +176,10 @@ fn n_and_p_jump_between_bookmarks() {
     app.set_size(40, 10);
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(app.max_scroll());
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(0);
 
     app.handle_key(key(KeyCode::Char('n')));
@@ -136,6 +196,7 @@ fn r_renames_the_selected_bookmark() {
     app.set_size(40, 10);
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Char('B')));
     app.handle_key(key(KeyCode::Char('r')));
     assert!(app.typing_buffer().is_some(), "режим ввода метки");
@@ -155,8 +216,10 @@ fn panel_d_deletes_the_selected_bookmark() {
     app.set_size(40, 10);
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(app.max_scroll());
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.bookmarks().len(), 2);
     let before = store_bookmark_labels(&app, &path);
 
@@ -175,8 +238,10 @@ fn b_updates_navigation_when_position_changes() {
     app.set_size(40, 10);
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(30);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.bookmarks().len(), 2);
     let blocks: Vec<usize> = app.bookmarks().iter().map(|b| b.anchor.block).collect();
     let mut sorted = blocks.clone();

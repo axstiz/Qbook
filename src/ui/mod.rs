@@ -3,11 +3,28 @@ pub mod shelf;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{App, InputPurpose, Screen};
+use crate::store::NOTE_COLOR_COUNT;
+use crate::ui::shelf::format_date;
+
+/// Семь цветов заметки в порядке индексов хранилища: красный, зелёный,
+/// жёлтый, синий, пурпурный, голубой, белый.
+pub fn note_color(index: u8) -> Color {
+    const COLORS: [Color; NOTE_COLOR_COUNT as usize] = [
+        Color::Red,
+        Color::Green,
+        Color::Yellow,
+        Color::Blue,
+        Color::Magenta,
+        Color::Cyan,
+        Color::White,
+    ];
+    COLORS[usize::from(index).min(COLORS.len() - 1)]
+}
 
 /// Точка входа рендера: полка либо читалка с оверлеями панели закладок и prompt.
 pub fn render(app: &App, frame: &mut Frame) {
@@ -27,7 +44,7 @@ pub fn render(app: &App, frame: &mut Frame) {
         if y < top {
             let label = match app.typing_purpose() {
                 Some(InputPurpose::AddBook) => "Путь:",
-                _ => "Метка:",
+                _ => "Заметка:",
             };
             let line = Line::from(vec![
                 Span::styled(label, Style::new().add_modifier(Modifier::BOLD)),
@@ -73,7 +90,9 @@ fn render_bookmarks(app: &App, frame: &mut Frame, area: Rect, below: u16) {
         };
         lines.push(Line::from(vec![
             Span::styled(marker, style),
+            Span::styled("● ", Style::new().fg(note_color(bookmark.color))),
             Span::styled(bookmark.label.clone(), style),
+            Span::styled(format!(" · {}", format_date(bookmark.created_at)), style),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), Rect { x: area.x, y, width: area.width, height });

@@ -50,7 +50,7 @@ pub fn render(app: &App, frame: &mut Frame) {
 fn footer_line(app: &App) -> Line<'static> {
     if let Some(buffer) = app.typing_buffer() {
         let label = match app.typing_purpose() {
-            Some(InputPurpose::RenameBookmark) => "Метка:",
+            Some(InputPurpose::RenameBookmark | InputPurpose::NewBookmark) => "Заметка:",
             _ => "Путь:",
         };
         Line::from(vec![

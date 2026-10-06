@@ -188,10 +188,13 @@ fn app_with_store_and_bookmarks() -> (TempDir, App) {
     app.set_size(50, 12);
     app.set_scroll(0);
     use crossterm::event::{KeyCode, KeyModifiers};
-    app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(app.max_scroll());
-    app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
-    app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('B'), KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Char('B')));
     (tmp, app)
 }
 
@@ -202,6 +205,7 @@ fn bookmarks_panel_shows_labels_with_the_selection_bold() {
     let all = lines.join("\n");
     assert!(all.contains("Закладки:"), "заголовок панели: {all}");
     assert!(all.contains("Абзац номер 0"), "метка в панели: {all}");
+    assert!(all.contains('●'), "цветная точка заметки в панели: {all}");
 
     let selected_row = lines
         .iter()
@@ -236,6 +240,49 @@ fn status_bar_highlights_the_bookmark_label() {
     let (lines, _) = draw(&mut app, 60, 8);
     let status = lines.last().expect("статус");
     assert!(status.contains("Абзац номер 0"), "метка закладки в статусе: {status}");
+}
+
+#[test]
+fn note_marker_tints_the_first_column_of_the_bookmarked_block() {
+    let tmp = dir();
+    std::fs::write(tmp.path().join("book.md"), paragraphs(30)).expect("файл");
+    let store = qbook::store::Store::open(tmp.path().join("qbook.db")).expect("хранилище");
+    let mut app = App::load(&tmp.path().join("book.md"), "en", &[], Some(store)).expect("загрузка");
+    app.set_size(40, 10);
+    app.set_scroll(0);
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
+
+    let (lines, buffer) = screen(&mut app, 40, 10);
+    assert!(lines[0].starts_with('▎'), "маркер заметки на блоке: {:?}", lines[0]);
+    assert!(
+        buffer[(0, 0)].style().fg == Some(qbook::ui::note_color(5)),
+        "маркер цвета заметки: {:?}",
+        buffer[(0, 0)].style()
+    );
+    let blank = lines.iter().position(|l| l.starts_with("▎ "));
+    assert_eq!(blank, Some(1), "маркер на отступе виден: {lines:?}");
+}
+
+#[test]
+fn note_prompt_renders_its_label() {
+    let tmp = dir();
+    std::fs::write(tmp.path().join("book.md"), paragraphs(20)).expect("файл");
+    let store = qbook::store::Store::open(tmp.path().join("qbook.db")).expect("хранилище");
+    let mut app = App::load(&tmp.path().join("book.md"), "en", &[], Some(store)).expect("загрузка");
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('b'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let (lines, _) = draw(&mut app, 60, 10);
+    let all = lines.join("\n");
+    assert!(all.contains("Заметка:"), "подпись prompt для заметки: {all}");
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    ));
 }
 
 #[test]

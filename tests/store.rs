@@ -13,12 +13,12 @@ fn fresh_database_migrates_and_survives_reopen() {
     let path = dir.path().join("qbook.db");
     {
         let store = Store::open(&path).expect("открытие");
-        assert_eq!(store.user_version().expect("версия"), 2);
+        assert_eq!(store.user_version().expect("версия"), 3);
         assert!(store.list_books().expect("список пуст").is_empty());
     }
     {
         let store = Store::open(&path).expect("повторное открытие");
-        assert_eq!(store.user_version().expect("версия"), 2);
+        assert_eq!(store.user_version().expect("версия"), 3);
         assert!(store.list_books().expect("список пуст").is_empty());
     }
 }
@@ -83,18 +83,23 @@ fn bookmark_crud() {
     let store = Store::open(dir.path().join("qbook.db")).expect("открытие");
     let id = store.add_book("/b.epub", "T", "ru", 1, 1).expect("книга");
 
-    let first = store.add_bookmark(id, Anchor::new(10, 0.5), "глава 1").expect("закладка");
-    store.add_bookmark(id, Anchor::new(99, 0.0), "").expect("закладка");
+    let first = store.add_bookmark(id, Anchor::new(10, 0.5), "глава 1", 5).expect("закладка");
+    store.add_bookmark(id, Anchor::new(99, 0.0), "", 5).expect("закладка");
 
     let marks: Vec<Bookmark> = store.list_bookmarks(id).expect("список");
     assert_eq!(marks.len(), 2);
     assert_eq!(marks[0].id, first);
     assert_eq!(marks[0].anchor, Anchor::new(10, 0.5));
     assert_eq!(marks[0].label, "глава 1");
+    assert_eq!(marks[0].color, 5, "цвет по умолчанию — голубой");
 
     store.rename_bookmark(first, "новая метка").expect("переименование");
     let marks: Vec<Bookmark> = store.list_bookmarks(id).expect("список");
     assert_eq!(marks[0].label, "новая метка");
+
+    store.set_bookmark_color(first, 2).expect("цвет");
+    let marks: Vec<Bookmark> = store.list_bookmarks(id).expect("список");
+    assert_eq!(marks[0].color, 2, "жёлтый цвет сохранён");
 
     store.delete_bookmark(first).expect("удаление");
     let marks: Vec<Bookmark> = store.list_bookmarks(id).expect("список");
@@ -109,7 +114,7 @@ fn deleting_a_book_cascades() {
     let id = store.add_book("/b.epub", "T", "ru", 1, 1).expect("книга");
     store.set_variant(id, "en", "/b.en.epub", "epub").expect("вариант");
     store.set_progress(id, Anchor::START, "ru", 0.0).expect("прогресс");
-    store.add_bookmark(id, Anchor::START, "").expect("закладка");
+    store.add_bookmark(id, Anchor::START, "", 5).expect("закладка");
     store.save_alignment(id, "en", 1, 2, &[Some(0)], 1.0).expect("кэш");
 
     store.delete_book(id).expect("удаление");
