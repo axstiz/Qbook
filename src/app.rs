@@ -44,7 +44,13 @@ pub enum InputPurpose {
     AddBook,
     RenameBookmark,
     NewBookmark,
+    /// Командная строка ex-команд (клавиша `:` или панель «Команды»).
+    Command,
 }
+
+/// Минимальная высота для полной btop-оболочки; ниже — компактный рендер
+/// статус-баром.
+const MIN_UI_HEIGHT: u16 = 6;
 
 /// Имена семи цветов заметки — их показывает тост при перекраске.
 const NOTE_COLOR_NAMES: [&str; 7] =
@@ -361,7 +367,12 @@ impl App {
     }
 
     pub fn viewport_height(&self) -> usize {
-        self.height.saturating_sub(1).into()
+        if self.height < MIN_UI_HEIGHT {
+            self.height.saturating_sub(1).into()
+        } else {
+            // Клавиатурный бар (1), слот тоста (1) и рамка текста (2 борта).
+            self.height.saturating_sub(4).into()
+        }
     }
 
     pub fn max_scroll(&self) -> usize {
@@ -447,15 +458,16 @@ impl App {
             KeyCode::Char('t') => {
                 self.next_lang();
             }
-            KeyCode::Char(c @ '1'..='9') => {
-                self.switch_lang(c as usize - '1' as usize);
+            KeyCode::Char('1') => {
+                self.close_panels();
             }
+            KeyCode::Char('2') | KeyCode::Char('o') => self.toggle_toc(),
+            KeyCode::Char('3') | KeyCode::Char('B') => self.toggle_bookmarks(),
+            KeyCode::Char('5') | KeyCode::Char(':') => self.start_command(),
             KeyCode::Char('h') => self.go_shelf(),
             KeyCode::Char('b') => self.add_bookmark(),
-            KeyCode::Char('B') => self.toggle_bookmarks(),
             KeyCode::Char('n') => self.jump_bookmark(true),
             KeyCode::Char('p') => self.jump_bookmark(false),
-            KeyCode::Char('o') => self.open_toc(),
             KeyCode::Char('?') => self.help_open = true,
             KeyCode::Char('[') => self.resize_column(-COL_STEP),
             KeyCode::Char(']') => self.resize_column(COL_STEP),
@@ -463,18 +475,40 @@ impl App {
         }
     }
 
-    /// Оглавление: курсор ставится на текущий раздел.
-    fn open_toc(&mut self) {
+    /// Оглавление: открыть, если закрыто (курсор на текущий раздел), иначе закрыть.
+    fn toggle_toc(&mut self) {
+        if self.toc_open {
+            self.toc_open = false;
+            return;
+        }
         let block = self.anchor().block;
         self.toc_cursor =
             self.document().toc().iter().rposition(|item| item.block <= block).unwrap_or(0);
         self.toc_open = true;
     }
 
+    /// Цифра `1`: оставить только текст, закрыть боковые панели.
+    fn close_panels(&mut self) {
+        self.toc_open = false;
+        self.bookmarks_open = false;
+    }
+
+    /// Открыть командную строку ex-команд (`.5` или `:`).
+    fn start_command(&mut self) {
+        self.typing = Some(Typing {
+            purpose: InputPurpose::Command,
+            buffer: String::new(),
+            bookmark_id: None,
+            anchor: None,
+        });
+    }
+
     fn handle_toc_key(&mut self, key: KeyEvent) {
         let last = self.document().toc().len().saturating_sub(1);
         match key.code {
-            KeyCode::Esc | KeyCode::Char('o') => self.toc_open = false,
+            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('2') => self.toc_open = false,
+            KeyCode::Char('1') => self.close_panels(),
+            KeyCode::Char('3') => self.toggle_bookmarks(),
             KeyCode::Char('j') | KeyCode::Down => self.toc_cursor = (self.toc_cursor + 1).min(last),
             KeyCode::Char('k') | KeyCode::Up => self.toc_cursor = self.toc_cursor.saturating_sub(1),
             KeyCode::Enter => {
@@ -525,9 +559,11 @@ impl App {
 
     fn handle_panel_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('B') | KeyCode::Char('q') => {
+            KeyCode::Esc | KeyCode::Char('B') | KeyCode::Char('3') | KeyCode::Char('q') => {
                 self.bookmarks_open = false;
             }
+            KeyCode::Char('1') => self.close_panels(),
+            KeyCode::Char('2') => self.toggle_toc(),
             KeyCode::Char('j') | KeyCode::Down => {
                 self.bookmark_cursor =
                     (self.bookmark_cursor + 1).min(self.bookmarks.len().saturating_sub(1));
@@ -551,9 +587,8 @@ impl App {
                     });
                 }
             }
-            KeyCode::Char(c @ '1'..='7') => {
-                self.recolor_selected(c as u8 - b'1');
-            }
+            KeyCode::Char('c') => self.recolor_by(1),
+            KeyCode::Char('C') => self.recolor_by(-1),
             KeyCode::Char('D') => self.delete_selected_bookmark(),
             _ => {}
         }
@@ -618,6 +653,29 @@ impl App {
                     self.set_notice(format!("+ заметка: {label}"));
                 }
             }
+            InputPurpose::Command => {
+                let command = typing.buffer.trim().to_owned();
+                if let Some(message) = self.handle_command(&command) {
+                    self.set_notice(message);
+                }
+            }
+        }
+    }
+
+    /// Диспетчер ex-команд. Пустая строка закрывает prompt без действия.
+    /// Возвращает тост: подтверждение либо ошибку.
+    fn handle_command(&mut self, command: &str) -> Option<String> {
+        match command {
+            "" => None,
+            "shelf" => {
+                self.go_shelf();
+                None
+            }
+            "q" => {
+                self.quit = true;
+                None
+            }
+            other => Some(format!(": нет команды «{other}»")),
         }
     }
 
@@ -775,6 +833,12 @@ impl App {
             bookmark.color = color;
         }
         self.set_notice(format!("цвет: {}", NOTE_COLOR_NAMES[usize::from(color)]));
+    }
+
+    fn recolor_by(&mut self, step: i8) {
+        let Some(color) = self.bookmarks.get(self.bookmark_cursor).map(|b| b.color) else { return };
+        let next = (i32::from(color) + i32::from(step)).rem_euclid(7) as u8;
+        self.recolor_selected(next);
     }
 
     /// Цвет заметки на блоке — маркер▎ в тексте, если такая заметка есть.

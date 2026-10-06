@@ -84,7 +84,7 @@ fn navigation_keys_move_the_viewport() {
     let base = book_pair(tmp.path(), 60);
     let mut app = load(&base, None);
     app.set_size(40, 10);
-    assert_eq!(app.viewport_height(), 9);
+    assert_eq!(app.viewport_height(), 6);
 
     app.handle_key(key(KeyCode::Char('j')));
     assert_eq!(app.scroll(), 1);
@@ -98,20 +98,20 @@ fn navigation_keys_move_the_viewport() {
     assert_eq!(app.scroll(), 0, "верх документа зажат");
 
     app.handle_key(key(KeyCode::Char(' ')));
-    assert_eq!(app.scroll(), 9);
+    assert_eq!(app.scroll(), 6);
     app.handle_key(key(KeyCode::PageDown));
-    assert_eq!(app.scroll(), 18);
+    assert_eq!(app.scroll(), 12);
     app.handle_key(key(KeyCode::PageUp));
-    assert_eq!(app.scroll(), 9);
+    assert_eq!(app.scroll(), 6);
 
     app.handle_key(ctrl(KeyCode::Char('d')));
-    assert_eq!(app.scroll(), 13);
-    app.handle_key(ctrl(KeyCode::Char('u')));
     assert_eq!(app.scroll(), 9);
+    app.handle_key(ctrl(KeyCode::Char('u')));
+    assert_eq!(app.scroll(), 6);
 
     app.handle_key(key(KeyCode::Char('G')));
-    // 60 абзацев с отступами = 119 строк, видимых 9.
-    assert_eq!(app.scroll(), 110, "низ документа зажат");
+    // 60 абзацев с отступами = 119 строк, видимых 6.
+    assert_eq!(app.scroll(), 113, "низ документа зажат");
     app.handle_key(key(KeyCode::Char('g')));
     assert_eq!(app.scroll(), 0);
 
@@ -172,12 +172,12 @@ fn switching_language_keeps_the_block_in_view() {
     app.set_scroll(25);
 
     let before = app.anchor();
-    app.handle_key(key(KeyCode::Char('2')));
+    app.handle_key(key(KeyCode::Char('t')));
     assert_eq!(app.current_lang(), "ru");
     let after = app.anchor();
     assert_eq!(after.block.abs_diff(before.block), 0, "M1: |Δ block| = 0");
 
-    app.handle_key(key(KeyCode::Char('1')));
+    app.handle_key(key(KeyCode::Char('t')));
     assert_eq!(app.current_lang(), "en");
     assert_eq!(app.anchor().block, before.block, "возврат на базу");
 }
@@ -333,6 +333,59 @@ fn q_exits_only_when_no_overlay_is_open() {
     app.handle_key(key(KeyCode::Esc));
     app.handle_key(key(KeyCode::Char('q')));
     assert!(app.should_quit(), "после закрытия q выходит");
+}
+
+#[test]
+fn digits_toggle_panels_and_one_keeps_only_the_text() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 4);
+    let mut app = load(&base, None);
+
+    app.handle_key(key(KeyCode::Char('2')));
+    assert!(app.toc_open(), "цифра 2 открывает главы");
+    app.handle_key(key(KeyCode::Char('2')));
+    assert!(!app.toc_open(), "повторная 2 закрывает главы");
+
+    app.handle_key(key(KeyCode::Char('3')));
+    assert!(app.bookmarks_open(), "цифра 3 открывает панель заметок");
+    app.handle_key(key(KeyCode::Char('3')));
+    assert!(!app.bookmarks_open(), "повторная 3 закрывает заметки");
+
+    app.handle_key(key(KeyCode::Char('2')));
+    app.handle_key(key(KeyCode::Char('3')));
+    assert!(app.toc_open() && app.bookmarks_open(), "2 и 3 открыли панели");
+    app.handle_key(key(KeyCode::Char('1')));
+    assert!(!app.toc_open() && !app.bookmarks_open(), "1 оставляет только текст");
+}
+
+#[test]
+fn command_colon_opens_the_prompt_and_enter_executes_shelf() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 4);
+    let mut app = load(&base, None);
+    app.handle_key(key(KeyCode::Char(':')));
+    assert_eq!(app.typing_purpose(), Some(qbook::app::InputPurpose::Command));
+
+    for c in "shelf".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.screen(), qbook::app::Screen::Shelf, ": shelf открывает полку");
+}
+
+#[test]
+fn unknown_command_shows_a_toast() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 4);
+    let mut app = load(&base, None);
+    app.handle_key(key(KeyCode::Char('5')));
+    assert_eq!(app.typing_purpose(), Some(qbook::app::InputPurpose::Command), "5 открывает prompt");
+    for c in "bogus".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.typing_purpose(), None, "prompt закрыт после команды");
+    assert_eq!(app.notice(), Some(": нет команды «bogus»"), "тост об ошибке");
 }
 
 #[test]

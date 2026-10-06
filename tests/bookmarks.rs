@@ -86,7 +86,7 @@ fn notice_fades_after_ticks() {
 }
 
 #[test]
-fn digits_recolor_the_note_in_the_panel() {
+fn c_cycles_through_the_note_colors_in_the_panel() {
     let (_tmp, path, mut app) = loaded(20);
     app.set_size(40, 10);
     app.handle_key(key(KeyCode::Char('b')));
@@ -94,15 +94,21 @@ fn digits_recolor_the_note_in_the_panel() {
     app.handle_key(key(KeyCode::Char('B')));
     assert!(app.bookmarks_open());
 
-    app.handle_key(key(KeyCode::Char('3')));
-    assert_eq!(app.bookmarks()[0].color, 2, "3 — жёлтый");
+    let initial = app.bookmarks()[0].color;
+    app.handle_key(key(KeyCode::Char('c')));
+    assert_eq!(app.bookmarks()[0].color, (initial + 1) % 7, "c — следующий цвет по кругу");
 
-    app.handle_key(key(KeyCode::Char('7')));
-    assert_eq!(app.bookmarks()[0].color, 6, "7 — белый");
+    app.handle_key(key(KeyCode::Char('C')));
+    assert_eq!(app.bookmarks()[0].color, initial, "Shift+C — назад");
+
+    for _ in 0..7 {
+        app.handle_key(key(KeyCode::Char('c')));
+    }
+    assert_eq!(app.bookmarks()[0].color, initial, "семь c — полный круг");
 
     let store = app.store().expect("store");
     let id = store.book_id(&path.display().to_string()).expect("id").expect("есть");
-    assert_eq!(store.list_bookmarks(id).expect("список")[0].color, 6, "цвет в БД");
+    assert_eq!(store.list_bookmarks(id).expect("список")[0].color, initial, "цвет в БД");
 }
 
 #[test]

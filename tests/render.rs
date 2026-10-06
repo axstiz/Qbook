@@ -33,24 +33,36 @@ fn screen(app: &mut App, width: u16, height: u16) -> (Vec<String>, Buffer) {
 }
 
 #[test]
-fn status_bar_shows_position_percent_and_hint() {
+fn title_line_shows_position_percent_and_quality() {
     let mut app = app_of(&paragraphs(60));
     app.set_size(40, 10);
     app.set_scroll(25);
     let (lines, _) = screen(&mut app, 40, 10);
-    let status = lines.last().expect("строки есть");
-    assert!(status.contains("book"), "заголовок: {status}");
-    assert!(status.contains('%'), "процент: {status}");
-    assert!(status.contains("блок"), "позиция: {status}");
-    assert!(status.contains("60"), "всего блоков: {status}");
-    assert!(status.contains("j/k"), "подсказка: {status}");
-    assert!(!status.contains('⚠'), "качество базы не нуждается в бейдже: {status}");
+    println!("TITLE-TEST={lines:?}");
+    let title = &lines[0];
+    assert!(title.contains("book"), "заголовок: {title}");
+    assert!(title.contains('%'), "процент: {title}");
+    assert!(title.contains('/'), "позиция: {title}");
+    assert!(title.contains("60"), "всего блоков: {title}");
+    assert!(!title.contains('⚠'), "качество базы не нуждается в бейдже: {title}");
+
+    let bar = lines.last().expect("строки есть");
+    assert!(bar.contains("1:Текст"), "цифровая панель в баре: {bar}");
+    assert!(bar.contains("Главы"), "панели глав в баре: {bar}");
 
     let (lines, _) = screen(&mut app, 80, 10);
-    let status = lines.last().expect("строки есть");
-    assert!(status.contains("выход"), "полная подсказка на широком терминале: {status}");
-    assert!(status.contains("t язык"), "подсказка про язык: {status}");
-    assert!(status.contains("h полка"), "подсказка про полку: {status}");
+    let bar = lines.last().expect("строки есть");
+    assert!(bar.contains("выход"), "полный бар на широком терминале: {bar}");
+    assert!(bar.contains("t язык"), "бар про язык: {bar}");
+    assert!(bar.contains("h полка"), "бар про полку: {bar}");
+}
+
+fn blank_inside_frame(line: &str) -> bool {
+    line.chars().all(|c| matches!(c, '│' | '░' | '╮' | ' '))
+}
+
+fn blank_inside_line(line: &str) -> bool {
+    line.chars().all(|c| matches!(c, '│' | ' '))
 }
 
 #[test]
@@ -59,26 +71,30 @@ fn headings_quotes_and_paragraphs_are_decorated() {
     app.set_size(40, 10);
     let (lines, buffer) = screen(&mut app, 40, 10);
 
-    assert!(lines[0].starts_with("Глава"), "заголовок без решёток: {:?}", lines[0]);
+    // Строка 0 — верхняя граница рамки; текст начинается в строке 1.
+    assert!(lines[0].contains('╭'), "рамка со скруглённым углом: {:?}", lines[0]);
+    assert!(lines[1].starts_with("│Глава"), "заголовок без решёток: {:?}", lines[1]);
     let heading_bold =
-        (0..40).any(|x| buffer[(x, 0)].style().add_modifier.contains(Modifier::BOLD));
+        (0..40u16).any(|x| buffer[(x, 1)].style().add_modifier.contains(Modifier::BOLD));
     assert!(heading_bold, "заголовок жирный");
 
-    assert!(lines[1].trim_end().is_empty(), "отступ после заголовка: {:?}", lines[1]);
-    assert!(lines[2].contains("▌ первая строка цитаты"), "маркер цитаты: {:?}", lines[2]);
-    assert!(lines[3].starts_with("  вторая строка"), "отступ продолжения цитаты: {:?}", lines[3]);
-    assert!(lines[4].trim_end().is_empty(), "отступ после цитаты: {:?}", lines[4]);
-    assert!(lines[5].starts_with("обычный абзац"), "абзац без отступа: {:?}", lines[5]);
+    assert!(blank_inside_line(&lines[2]), "отступ после заголовка: {:?}", lines[2]);
+    assert!(lines[3].contains("▌ первая строка цитаты"), "маркер цитаты: {:?}", lines[3]);
+    assert!(lines[4].starts_with("│  вторая строка"), "отступ продолжения цитаты: {:?}", lines[4]);
+    assert!(blank_inside_line(&lines[5]), "отступ после цитаты: {:?}", lines[5]);
+    assert!(lines[6].starts_with("│обычный абзац"), "абзац без отступа: {:?}", lines[6]);
+    assert!(blank_inside_frame(&lines[8]), "слот над баром пуст: {:?}", lines[8]);
+    assert!(lines[9].contains("1:Текст"), "бар внизу: {:?}", lines[9]);
 }
 
 #[test]
 fn paragraphs_are_separated_by_a_blank_line_on_screen() {
     let mut app = app_of("первый абзац\n\nвторой абзац");
-    app.set_size(40, 6);
-    let (lines, _) = screen(&mut app, 40, 6);
-    assert_eq!(lines[0].trim_end(), "первый абзац");
-    assert!(lines[1].trim_end().is_empty(), "между абзацами пустая строка: {:?}", lines[1]);
-    assert_eq!(lines[2].trim_end(), "второй абзац");
+    app.set_size(40, 8);
+    let (lines, _) = screen(&mut app, 40, 8);
+    assert_eq!(lines[1].trim_matches(|c: char| c == '│' || c == ' '), "первый абзац");
+    assert!(blank_inside_line(&lines[2]), "между абзацами пустая строка: {:?}", lines[2]);
+    assert_eq!(lines[3].trim_matches(|c: char| c == '│' || c == ' '), "второй абзац");
 }
 
 #[test]
@@ -86,12 +102,12 @@ fn long_documents_get_a_scrollbar() {
     let mut app = app_of(&paragraphs(60));
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
-    assert!(lines.iter().any(|line| line.ends_with('█')), "скроллбар есть: {lines:?}");
+    assert!(lines.iter().any(|line| line.contains('█')), "скроллбар есть: {lines:?}");
 }
 
 #[test]
 fn short_documents_have_no_scrollbar() {
-    let mut app = app_of(&paragraphs(4));
+    let mut app = app_of(&paragraphs(3));
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
     assert!(!lines.iter().any(|line| line.contains('█')), "скроллбара нет: {lines:?}");
@@ -115,8 +131,8 @@ fn low_alignment_quality_is_badged() {
     assert!(app.switch_lang(1));
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
-    let status = lines.last().expect("строки есть");
-    assert!(status.contains('⚠'), "бейдж качества: {status}");
+    let title = &lines[0];
+    assert!(title.contains('⚠'), "бейдж качества в заголовке: {title}");
 }
 
 #[test]
@@ -130,9 +146,9 @@ fn good_alignment_has_no_badge() {
     assert!(app.switch_lang(1));
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
-    let status = lines.last().expect("строки есть");
-    assert!(!status.contains('⚠'), "качество в норме: {status}");
-    assert!(status.contains("ru"), "текущий язык: {status}");
+    let title = &lines[0];
+    assert!(!title.contains('⚠'), "качество в норме: {title}");
+    assert!(title.contains("ru"), "текущий язык в заголовке: {title}");
 }
 
 #[test]
@@ -203,17 +219,17 @@ fn bookmarks_panel_shows_labels_with_the_selection_bold() {
     let (_tmp, mut app) = app_with_store_and_bookmarks();
     let (lines, buffer) = draw(&mut app, 50, 12);
     let all = lines.join("\n");
-    assert!(all.contains("Закладки:"), "заголовок панели: {all}");
+    assert!(all.contains("Заметки"), "заголовок панели: {all}");
     assert!(all.contains("Абзац номер 0"), "метка в панели: {all}");
     assert!(all.contains('●'), "цветная точка заметки в панели: {all}");
 
     let selected_row = lines
         .iter()
-        .position(|l| l.starts_with('>') && l.contains("Абзац"))
+        .position(|l| l.contains('►') && l.contains("Абзац"))
         .expect("выделенная строка панели");
     let bold = (0..50u16)
         .any(|x| buffer[(x, selected_row as u16)].style().add_modifier.contains(Modifier::BOLD));
-    assert!(bold, "выбранная закладка подчёркнута жирным");
+    assert!(bold, "выбранная закладка жирная");
 }
 
 #[test]
@@ -234,12 +250,12 @@ fn prompt_line_renders_typed_path() {
 }
 
 #[test]
-fn status_bar_highlights_the_bookmark_label() {
+fn title_highlights_the_bookmark_label() {
     let (_tmp, mut app) = app_with_store_and_bookmarks();
     app.set_scroll(0);
     let (lines, _) = draw(&mut app, 60, 8);
-    let status = lines.last().expect("статус");
-    assert!(status.contains("Абзац номер 0"), "метка закладки в статусе: {status}");
+    let title = &lines[0];
+    assert!(title.contains("Абзац номер 0"), "метка закладки в заголовке: {title}");
 }
 
 #[test]
@@ -256,14 +272,14 @@ fn note_marker_tints_the_first_column_of_the_bookmarked_block() {
     app.handle_key(key(KeyCode::Enter));
 
     let (lines, buffer) = screen(&mut app, 40, 10);
-    assert!(lines[0].starts_with('▎'), "маркер заметки на блоке: {:?}", lines[0]);
+    assert!(lines[1].starts_with("│▎"), "маркер заметки на блоке: {:?}", lines[1]);
     assert!(
-        buffer[(0, 0)].style().fg == Some(qbook::ui::note_color(5)),
+        buffer[(1, 1)].style().fg == Some(qbook::ui::note_color(5)),
         "маркер цвета заметки: {:?}",
-        buffer[(0, 0)].style()
+        buffer[(1, 1)].style()
     );
-    let blank = lines.iter().position(|l| l.starts_with("▎ "));
-    assert_eq!(blank, Some(1), "маркер на отступе виден: {lines:?}");
+    let blank = lines.iter().position(|l| l.starts_with("│▎ "));
+    assert_eq!(blank, Some(2), "маркер на отступе виден: {lines:?}");
 }
 
 #[test]
@@ -286,23 +302,38 @@ fn note_prompt_renders_its_label() {
 }
 
 #[test]
-fn toc_overlay_lists_headings_above_the_status_line() {
+fn bar_highlights_the_digit_of_the_open_panel() {
+    let mut app = app_of(&paragraphs(30));
+    app.set_size(60, 10);
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('2'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let (_, buffer) = draw(&mut app, 60, 10);
+    let bar_row = 9u16;
+    let yellow =
+        (0..60u16).any(|x| buffer[(x, bar_row)].style().fg == Some(ratatui::style::Color::Yellow));
+    assert!(yellow, "цифра открытой панели подсвечена в баре");
+}
+
+#[test]
+fn toc_overlay_lists_headings_above_the_slot() {
     let mut app = app_of(
         "# Раздел 1\n\nпервый абзац\n\n## Раздел 2\n\nвторой абзац\n\n# Раздел 3\n\nтретий абзац",
     );
     app.set_size(50, 12);
     app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Char('o'),
+        crossterm::event::KeyCode::Char('2'),
         crossterm::event::KeyModifiers::NONE,
     ));
     let (lines, _) = draw(&mut app, 50, 12);
     let all = lines.join("\n");
-    assert!(all.contains("Оглавление"), "заголовок шторки: {all}");
+    assert!(all.contains("Главы"), "заголовок панели глав: {all}");
     assert!(all.contains("Раздел 1"), "первый пункт: {all}");
     assert!(all.contains("Раздел 2"), "второй пункт: {all}");
     assert!(all.contains("Раздел 3"), "третий пункт: {all}");
-    let status = lines.last().expect("статус");
-    assert!(status.contains('%'), "статус не перекрыт: {status}");
+    let title = &lines[0];
+    assert!(title.contains('%'), "метрики не перекрыты: {title}");
 }
 
 #[test]
@@ -317,6 +348,6 @@ fn help_overlay_shows_bindings_and_keeps_status_visible() {
     let all = lines.join("\n");
     assert!(all.contains("Справка"), "заголовок справки: {all}");
     assert!(all.contains("оглавление"), "строка об оглавлении: {all}");
-    let status = lines.last().expect("статус");
-    assert!(status.contains('%'), "статус не перекрыт: {status}");
+    let title = &lines[0];
+    assert!(title.contains('%'), "метрики не перекрыты: {title}");
 }
