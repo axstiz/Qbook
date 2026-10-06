@@ -21,10 +21,26 @@ const COMMANDS_MAX_ROWS: usize = 12;
 const QUALITY_WARN: f32 = 0.9;
 /// Хвост клавиатурного бара: подписанные клавиши после цифровых панелей.
 const BAR_WIDE_AT: u16 = 70;
-const BAR_HINT_WIDE: &str = " · t язык · Shift+1–4 вид · h полка · q выход";
-const BAR_HINT_NARROW: &str = " · t h ? q";
 /// Ширина панели прогресса в заголовке.
-const PROGRESS_CELLS: usize = 8;
+const PROGRESS_CELLS: usize = 14;
+/// Минимальная высота блока «Заметки» при делении правой колонки.
+const BOOKMARKS_MIN: u16 = 3;
+
+/// Динамическая подсказка бара: команды текущего блока + общие хвосты.
+fn bar_hint(focus: ReaderFocus, wide: bool) -> &'static str {
+    match (focus, wide) {
+        (ReaderFocus::Text, true) => " · b заметка · v выд · j/k · t язык · h полка · q выход",
+        (ReaderFocus::Toc, true) => " · j/k · Enter — к разделу · t язык · h полка · q выход",
+        (ReaderFocus::Bookmarks, true) => {
+            " · j/k · Enter — к заметке · c/C цвет · D удалить · q выход"
+        }
+        (ReaderFocus::Commands, true) => " · j/k · Enter — подставить · t язык · h полка · q выход",
+        (ReaderFocus::Text, false) => " · b v t h q",
+        (ReaderFocus::Toc, false) => " · j k Enter q",
+        (ReaderFocus::Bookmarks, false) => " · j k c D q",
+        (ReaderFocus::Commands, false) => " · j k Enter q",
+    }
+}
 
 pub fn render(app: &App, frame: &mut Frame) {
     let area = frame.area();
@@ -128,6 +144,24 @@ fn render_text(app: &App, frame: &mut Frame, area: Rect, active: bool) {
         &mut state,
     );
     frame.render_widget(block, area);
+    fade_bottom(frame, inner);
+}
+
+/// Градиент внизу текста: последние строки плавно гаснут к нижнему краю.
+fn fade_bottom(frame: &mut Frame, inner: Rect) {
+    let rows = 3.min(inner.height);
+    for i in 0..rows {
+        let y = inner.y + inner.height - 1 - i;
+        for x in inner.x..inner.x + inner.width {
+            let cell = &mut frame.buffer_mut()[(x, y)];
+            let mut style = cell.style();
+            style = style.add_modifier(Modifier::DIM);
+            if i == 0 {
+                style = style.fg(Color::DarkGray);
+            }
+            cell.set_style(style);
+        }
+    }
 }
 
 fn render_text_lines(app: &App, frame: &mut Frame, area: Rect) {
@@ -273,21 +307,24 @@ fn render_toc(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     frame.render_widget(block_frame(" Главы ", active), area);
 }
 
-/// Правая колонка: снизу список команд, над ним заметки.
+/// Правая колонка: снизу список команд, над ним заметки. Когда места мало,
+/// блок команд прячется сам — заметки остаются; в фокусе команд он всегда виден.
 fn render_right(app: &App, frame: &mut Frame, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     let mut above = area;
-    if app.commands_visible() && above.height >= 3 {
-        let cmds_height = (COMMANDS.len().min(COMMANDS_MAX_ROWS) as u16 + 2).min(above.height);
+    let focused = app.focus() == ReaderFocus::Commands;
+    if app.commands_visible() && (focused || above.height >= BOOKMARKS_MIN + 3) {
+        let limit = if focused { above.height } else { above.height - BOOKMARKS_MIN };
+        let cmds_height = (COMMANDS.len().min(COMMANDS_MAX_ROWS) as u16 + 2).min(limit);
         let cmds_area = Rect {
             x: area.x,
             y: above.y + above.height - cmds_height,
             width: area.width,
             height: cmds_height,
         };
-        render_commands(app, frame, cmds_area, app.focus() == ReaderFocus::Commands);
+        render_commands(app, frame, cmds_area, focused);
         above.height -= cmds_height;
     }
     if above.height > 0 {
@@ -397,18 +434,18 @@ fn render_bar(app: &App, frame: &mut Frame, area: Rect, y: u16) {
     spans.push(Span::raw(" "));
     push_digit(&mut spans, "4", "Команды", app.focus() == ReaderFocus::Commands);
     if wide {
-        let hint = BAR_HINT_WIDE;
+        let hint = bar_hint(app.focus(), true);
         spans.push(Span::styled(hint, Style::new().add_modifier(Modifier::DIM)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), bar_area);
 }
 
-/// Цифра и подпись блока: активный — ярко-белый, остальные — серые.
+/// Цифра и подпись блока: выбранный тусклым, остальные — яркими.
 fn push_digit<'a>(spans: &mut Vec<Span<'a>>, digit: &'a str, name: &'a str, active: bool) {
     let style = if active {
-        Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
-    } else {
         Style::new().fg(Color::DarkGray)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD)
     };
     spans.push(Span::styled(format!("{digit}:{name}"), style));
 }
@@ -444,7 +481,7 @@ fn compact_status(app: &App, width: u16) -> Line<'static> {
     let total = app.document().len();
     let block = app.anchor().block + 1;
     let percent = app.percent();
-    let hint = if width >= BAR_WIDE_AT { BAR_HINT_WIDE } else { BAR_HINT_NARROW };
+    let hint = bar_hint(app.focus(), width >= BAR_WIDE_AT);
     Line::from(vec![
         Span::raw(format!(" {} · ", app.title())),
         Span::styled(langs(app), Style::new().add_modifier(Modifier::BOLD)),

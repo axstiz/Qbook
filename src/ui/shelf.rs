@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use crate::app::{App, InputPurpose};
 
-const PROGRESS_CELLS: usize = 8;
+const PROGRESS_CELLS: usize = 14;
 
 /// Цветная «клавиша» в баре: жёлтая подпись на тёмном фоне.
 fn key_span<'a>(label: &'a str) -> Span<'a> {
@@ -73,7 +73,7 @@ fn book_line(book: &crate::app::ShelfBook, selected: bool) -> Line<'static> {
     ])
 }
 
-/// Мини-полоска прогресса `▓▓░░░░░░` из восьми клеток.
+/// Мини-полоска прогресса из `PROGRESS_CELLS` клеток.
 fn mini_progress(percent: f32) -> String {
     let filled = ((percent.clamp(0.0, 100.0) / 100.0) * PROGRESS_CELLS as f32).round() as usize;
     format!("{}{}", "▓".repeat(filled), "░".repeat(PROGRESS_CELLS - filled))

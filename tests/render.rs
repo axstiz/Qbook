@@ -50,11 +50,12 @@ fn title_line_shows_position_percent_and_quality() {
     assert!(bar.contains("1:Текст"), "цифровая панель в баре: {bar}");
     assert!(bar.contains("Главы"), "панели глав в баре: {bar}");
 
-    let (lines, _) = screen(&mut app, 80, 10);
+    let (lines, _) = screen(&mut app, 100, 10);
     let bar = lines.last().expect("строки есть");
     assert!(bar.contains("выход"), "полный бар на широком терминале: {bar}");
     assert!(bar.contains("t язык"), "бар про язык: {bar}");
     assert!(bar.contains("h полка"), "бар про полку: {bar}");
+    assert!(bar.contains("b заметка"), "динамическая подсказка текста: {bar}");
 }
 
 fn blank_inside_frame(line: &str) -> bool {
@@ -328,7 +329,7 @@ fn bar_highlights_the_digit_of_the_active_block() {
 
     let (lines, buffer) = screen(&mut app, 80, 10);
     let idx = digit_at(&lines, '2');
-    assert_eq!(fg(&buffer, idx), Some(ratatui::style::Color::DarkGray), "неактивная цифра серая");
+    assert_eq!(fg(&buffer, idx), Some(ratatui::style::Color::Reset), "неактивная цифра яркая");
 
     app.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('2'),
@@ -336,9 +337,9 @@ fn bar_highlights_the_digit_of_the_active_block() {
     ));
     let (lines, buffer) = screen(&mut app, 80, 10);
     let idx = digit_at(&lines, '2');
-    assert_eq!(fg(&buffer, idx), Some(ratatui::style::Color::White), "активная цифра белая");
+    assert_eq!(fg(&buffer, idx), Some(ratatui::style::Color::DarkGray), "выбранная цифра тусклая");
     let text_idx = digit_at(&lines, '1');
-    assert_eq!(fg(&buffer, text_idx), Some(ratatui::style::Color::DarkGray), "текст стал серым");
+    assert_eq!(fg(&buffer, text_idx), Some(ratatui::style::Color::Reset), "текст стал ярким");
 }
 
 #[test]
@@ -365,12 +366,12 @@ fn toc_overlay_lists_headings_above_the_slot() {
     let mut app = app_of(
         "# Раздел 1\n\nпервый абзац\n\n## Раздел 2\n\nвторой абзац\n\n# Раздел 3\n\nтретий абзац",
     );
-    app.set_size(50, 12);
+    app.set_size(60, 12);
     app.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('2'),
         crossterm::event::KeyModifiers::NONE,
     ));
-    let (lines, _) = draw(&mut app, 50, 12);
+    let (lines, _) = draw(&mut app, 60, 12);
     let all = lines.join("\n");
     assert!(all.contains("Главы"), "заголовок панели глав: {all}");
     assert!(all.contains("Раздел 1"), "первый пункт: {all}");
@@ -394,4 +395,71 @@ fn help_overlay_shows_bindings_and_keeps_status_visible() {
     assert!(all.contains("оглавление"), "строка об оглавлении: {all}");
     let title = &lines[0];
     assert!(title.contains('%'), "метрики не перекрыты: {title}");
+}
+
+#[test]
+fn bar_hint_follows_the_focused_block() {
+    let mut app = app_of(&paragraphs(10));
+    app.set_size(100, 10);
+    let bar = |app: &mut App| {
+        let (lines, _) = screen(app, 100, 10);
+        lines.last().expect("бар").clone()
+    };
+
+    let text_bar = bar(&mut app);
+    assert!(text_bar.contains("b заметка"), "подсказка текста: {text_bar}");
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('2'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let toc_bar = bar(&mut app);
+    assert!(toc_bar.contains("к разделу"), "подсказка глав: {toc_bar}");
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('3'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let notes_bar = bar(&mut app);
+    assert!(notes_bar.contains("к заметке"), "подсказка заметок: {notes_bar}");
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('4'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let cmds_bar = bar(&mut app);
+    assert!(cmds_bar.contains("подставить"), "подсказка команд: {cmds_bar}");
+}
+
+#[test]
+fn commands_block_hides_itself_but_bookmarks_stay() {
+    let mut app = app_of(&paragraphs(5));
+    // Высота 7: правой колонке 5 строк — командам тесно, заметки остаются.
+    app.set_size(96, 7);
+    let (lines, _) = screen(&mut app, 96, 7);
+    let all = lines.join("\n");
+    assert!(all.contains("Заметки"), "заметки остаются: {all}");
+    assert!(!all.contains(":open"), "команды спрятались сами: {all}");
+
+    // Окно повыше — команды вернулись.
+    app.set_size(96, 12);
+    let (lines, _) = screen(&mut app, 96, 12);
+    let all = lines.join("\n");
+    assert!(all.contains(":open"), "команды вернулись: {all}");
+    assert!(all.contains("Заметки"), "заметки на месте: {all}");
+}
+
+#[test]
+fn text_fades_towards_the_bottom_edge() {
+    let mut app = app_of(&paragraphs(10));
+    app.set_size(40, 10);
+    let (_lines, buffer) = screen(&mut app, 40, 10);
+    // Нижняя внутренняя строка рамки текста: слот (1) + бар (1) + борт (1).
+    let bottom_text_row = 10u16 - 4;
+    let dim = (0..40u16)
+        .any(|x| buffer[(x, bottom_text_row)].style().add_modifier.contains(Modifier::DIM));
+    assert!(dim, "нижняя строка текста приглушена");
+    let mid = (0..40u16)
+        .any(|x| buffer[(x, bottom_text_row - 3)].style().add_modifier.contains(Modifier::DIM));
+    assert!(!mid, "выше зоны градиента текст яркий");
 }
