@@ -49,6 +49,8 @@ fn status_bar_shows_position_percent_and_hint() {
     let (lines, _) = screen(&mut app, 80, 10);
     let status = lines.last().expect("строки есть");
     assert!(status.contains("выход"), "полная подсказка на широком терминале: {status}");
+    assert!(status.contains("t язык"), "подсказка про язык: {status}");
+    assert!(status.contains("h полка"), "подсказка про полку: {status}");
 }
 
 #[test]

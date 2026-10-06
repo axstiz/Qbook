@@ -363,19 +363,38 @@ fn brackets_widen_and_narrow_the_column_keeping_the_block() {
 }
 
 #[test]
-fn l_cycles_languages_and_out_of_range_keys_are_ignored() {
+fn t_cycles_languages_and_out_of_range_keys_are_ignored() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 4);
     let mut app = load(&base, None);
-    app.handle_key(key(KeyCode::Char('L')));
+    app.handle_key(key(KeyCode::Char('t')));
     assert_eq!(app.current_lang(), "ru");
-    app.handle_key(key(KeyCode::Char('L')));
+    app.handle_key(key(KeyCode::Char('t')));
     assert_eq!(app.current_lang(), "en", "цикл по кругу");
 
     app.handle_key(key(KeyCode::Char('9')));
     assert_eq!(app.current_lang(), "en");
     assert!(!app.switch_lang(5));
     assert_eq!(app.current_lang(), "en");
+}
+
+#[test]
+fn h_opens_shelf_and_old_l_keys_are_gone() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 4);
+
+    let mut app = load(&base, None);
+    app.handle_key(key(KeyCode::Char('h')));
+    assert_eq!(app.screen(), qbook::app::Screen::Shelf, "h открывает полку");
+
+    let mut app = load(&base, None);
+    app.handle_key(key(KeyCode::Char('l')));
+    assert_eq!(app.screen(), qbook::app::Screen::Reader, "l больше не полка");
+    assert_eq!(app.current_lang(), "en");
+
+    app.handle_key(key(KeyCode::Char('L')));
+    assert_eq!(app.screen(), qbook::app::Screen::Reader, "L больше не язык");
+    assert_eq!(app.current_lang(), "en", "L не переключает язык");
 }
 
 #[test]

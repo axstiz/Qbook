@@ -14,7 +14,7 @@ use crate::parse::txt::{list_marker, strip_heading};
 /// Ниже этого покрытия статус-бар подсвечивает качество выравнивания.
 const QUALITY_WARN: f32 = 0.9;
 /// Полная подсказка нуждается в ширине; узкий терминал получает только неё.
-const HINT_WIDE: &str = " · j/k · L язык · B закладки · l полка · q выход";
+const HINT_WIDE: &str = " · j/k · t язык · B закладки · h полка · q выход";
 const HINT_NARROW: &str = " j/k L q";
 const HINT_WIDE_AT: u16 = 70;
 

@@ -387,7 +387,7 @@ impl App {
         true
     }
 
-    /// Следующий язык по кругу (клавиша `L`).
+    /// Следующий язык по кругу (клавиша `t`).
     pub fn next_lang(&mut self) -> bool {
         let next = (self.current + 1) % self.variants.len();
         self.switch_lang(next)
@@ -426,13 +426,13 @@ impl App {
             }
             KeyCode::Char('g') => self.scroll = 0,
             KeyCode::Char('G') => self.scroll = self.max_scroll(),
-            KeyCode::Char('L') => {
+            KeyCode::Char('t') => {
                 self.next_lang();
             }
             KeyCode::Char(c @ '1'..='9') => {
                 self.switch_lang(c as usize - '1' as usize);
             }
-            KeyCode::Char('l') => self.go_shelf(),
+            KeyCode::Char('h') => self.go_shelf(),
             KeyCode::Char('b') => self.add_bookmark(),
             KeyCode::Char('B') => self.toggle_bookmarks(),
             KeyCode::Char('n') => self.jump_bookmark(true),
