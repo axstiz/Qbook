@@ -196,7 +196,7 @@ fn shelf_renders_title_langs_percent_and_date() {
     assert!(all.contains("2023-11-14"), "дата добавления: {all}");
     assert!(all.contains("en"), "базовый язык: {all}");
     assert!(all.contains("ru"), "перевод: {all}");
-    assert!(all.contains('█'), "мини-прогресс: {all}");
+    assert!(all.contains('▮'), "мини-прогресс: {all}");
     let cursor = lines.iter().find(|l| l.contains("Война и мир")).expect("строка книги");
     assert!(cursor.contains('►'), "курсор полки отмечен: {cursor}");
 }

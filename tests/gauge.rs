@@ -6,8 +6,8 @@ fn gauge_fills_from_dark_red_to_neon() {
     let line = btop_gauge(50.0, 4);
     let spans: Vec<_> = line.spans;
     assert_eq!(spans.len(), 4, "ширина бара");
-    assert_eq!(spans[0].content.as_ref(), "█");
-    assert_eq!(spans[3].content.as_ref(), "·");
+    assert_eq!(spans[0].content.as_ref(), "▮");
+    assert_eq!(spans[3].content.as_ref(), "▯");
 
     let fg = |span: &ratatui::text::Span| match span.style.fg {
         Some(Color::Rgb(r, g, b)) => (r, g, b),
@@ -24,9 +24,9 @@ fn gauge_fills_from_dark_red_to_neon() {
 #[test]
 fn gauge_handles_edges() {
     let empty = btop_gauge(0.0, 3);
-    assert!(empty.spans.iter().all(|s| s.content.as_ref() == "·"));
+    assert!(empty.spans.iter().all(|s| s.content.as_ref() == "▯"));
     let full = btop_gauge(100.0, 3);
-    assert!(full.spans.iter().all(|s| s.content.as_ref() == "█"));
+    assert!(full.spans.iter().all(|s| s.content.as_ref() == "▮"));
     let over = btop_gauge(150.0, 3);
-    assert!(over.spans.iter().all(|s| s.content.as_ref() == "█"), "переполнение зажато");
+    assert!(over.spans.iter().all(|s| s.content.as_ref() == "▮"), "переполнение зажато");
 }

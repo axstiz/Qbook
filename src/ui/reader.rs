@@ -26,20 +26,49 @@ const PROGRESS_CELLS: usize = 14;
 /// Минимальная высота блока «Заметки» при делении правой колонки.
 const BOOKMARKS_MIN: u16 = 3;
 
-/// Динамическая подсказка бара: команды текущего блока + общие хвосты.
-fn bar_hint(focus: ReaderFocus, wide: bool) -> &'static str {
-    match (focus, wide) {
-        (ReaderFocus::Text, true) => " · b заметка · v выд · j/k · t язык · h полка · q выход",
-        (ReaderFocus::Toc, true) => " · j/k · Enter — к разделу · t язык · h полка · q выход",
-        (ReaderFocus::Bookmarks, true) => {
-            " · j/k · Enter — к заметке · c/C цвет · D удалить · q выход"
+/// Динамическая подсказка бара: клавиши текущего блока жёлтым (как на полке),
+/// описания — тусклые. `t язык` только у текста, у заметок добавлена `h полка`.
+fn bar_hint(focus: ReaderFocus, wide: bool) -> Line<'static> {
+    let pairs: &[(&str, &str)] = match (focus, wide) {
+        (ReaderFocus::Text, true) => &[
+            ("b", "заметка"),
+            ("v", "выд"),
+            ("j/k", ""),
+            ("t", "язык"),
+            ("h", "полка"),
+            ("q", "выход"),
+        ],
+        (ReaderFocus::Toc, true) => {
+            &[("j/k", ""), ("Enter", "— к разделу"), ("h", "полка"), ("q", "выход")]
         }
-        (ReaderFocus::Commands, true) => " · j/k · Enter — подставить · t язык · h полка · q выход",
-        (ReaderFocus::Text, false) => " · b v t h q",
-        (ReaderFocus::Toc, false) => " · j k Enter q",
-        (ReaderFocus::Bookmarks, false) => " · j k c D q",
-        (ReaderFocus::Commands, false) => " · j k Enter q",
+        (ReaderFocus::Bookmarks, true) => &[
+            ("j/k", ""),
+            ("Enter", "— к заметке"),
+            ("c/C", "цвет"),
+            ("D", "удалить"),
+            ("h", "полка"),
+            ("q", "выход"),
+        ],
+        (ReaderFocus::Commands, true) => {
+            &[("j/k", ""), ("Enter", "— подставить"), ("h", "полка"), ("q", "выход")]
+        }
+        (ReaderFocus::Text, false) => &[("b", ""), ("v", ""), ("t", ""), ("h", ""), ("q", "")],
+        (ReaderFocus::Toc, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
+        (ReaderFocus::Bookmarks, false) => &[("j", ""), ("k", ""), ("c", ""), ("D", ""), ("q", "")],
+        (ReaderFocus::Commands, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
+    };
+    let sep = if wide { " · " } else { " " };
+    let mut spans = Vec::new();
+    for (i, (key, desc)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(sep));
+        }
+        spans.push(Span::styled(*key, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        if !desc.is_empty() {
+            spans.push(Span::styled(format!(" {desc}"), Style::new().add_modifier(Modifier::DIM)));
+        }
     }
+    Line::from(spans)
 }
 
 pub fn render(app: &App, frame: &mut Frame) {
@@ -361,7 +390,7 @@ fn render_commands(app: &App, frame: &mut Frame, area: Rect, active: bool) {
         let marker = if selected { "►" } else { " " };
         let command = if args.is_empty() { name.to_string() } else { format!("{name} {args}") };
         let name_style = if selected {
-            Style::new().add_modifier(Modifier::BOLD)
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
         } else {
             Style::new().add_modifier(Modifier::DIM)
         };
@@ -428,8 +457,7 @@ fn render_bar(app: &App, frame: &mut Frame, area: Rect, y: u16) {
     spans.push(Span::raw(" "));
     push_digit(&mut spans, "4", "Команды", app.focus() == ReaderFocus::Commands);
     if wide {
-        let hint = bar_hint(app.focus(), true);
-        spans.push(Span::styled(hint, Style::new().add_modifier(Modifier::DIM)));
+        spans.extend(bar_hint(app.focus(), true).spans);
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), bar_area);
 }
@@ -476,12 +504,13 @@ fn compact_status(app: &App, width: u16) -> Line<'static> {
     let block = app.anchor().block + 1;
     let percent = app.percent();
     let hint = bar_hint(app.focus(), width >= BAR_WIDE_AT);
-    Line::from(vec![
+    let mut spans = vec![
         Span::raw(format!(" {} · ", app.title())),
         Span::styled(langs(app), Style::new().add_modifier(Modifier::BOLD)),
         Span::raw(format!(" · {percent:.1}% · блок {block}/{total}")),
-        Span::styled(hint, Style::new().add_modifier(Modifier::DIM)),
-    ])
+    ];
+    spans.extend(hint.spans);
+    Line::from(spans)
 }
 
 fn langs(app: &App) -> String {
