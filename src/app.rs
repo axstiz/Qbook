@@ -78,6 +78,12 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("open", "<путь>", "открыть книгу"),
     ("lang", "t|<код>", "язык по кругу / по коду"),
     ("goto", "<блок>", "перейти к блоку"),
+    ("toc", "", "показать/скрыть главы"),
+    ("notes", "", "показать/скрыть заметки"),
+    ("panels", "", "только текст ⇄ все колонки"),
+    ("wider", "", "шире колонку"),
+    ("narrower", "", "уже колонку"),
+    ("help", "", "справка по клавишам"),
     ("shelf", "", "полка"),
     ("b", "", "закладка здесь"),
     ("q", "", "выход"),
@@ -956,6 +962,30 @@ impl App {
             "lang" => self.command_lang(arg),
             "goto" => self.command_goto(arg),
             "open" => self.command_open(arg),
+            "toc" => {
+                self.toggle_toc();
+                Some(format!(": главы {}", if self.show_toc { "вкл" } else { "выкл" }))
+            }
+            "notes" => {
+                self.toggle_bookmarks();
+                Some(format!(": заметки {}", if self.show_bookmarks { "вкл" } else { "выкл" }))
+            }
+            "panels" => {
+                self.toggle_panels();
+                Some(format!(": колонки {}", if self.show_toc { "вкл" } else { "только текст" }))
+            }
+            "wider" => {
+                self.resize_column(COL_STEP);
+                Some(format!(": колонка {}", self.layout().width()))
+            }
+            "narrower" => {
+                self.resize_column(-COL_STEP);
+                Some(format!(": колонка {}", self.layout().width()))
+            }
+            "help" => {
+                self.help_open = true;
+                Some(": справка".to_owned())
+            }
             other => Some(format!(": нет команды «{other}»")),
         }
     }
@@ -1171,17 +1201,6 @@ impl App {
     pub fn active_heading(&self) -> Option<usize> {
         let block = self.anchor().block;
         self.document().toc().iter().rposition(|item| item.block <= block)
-    }
-
-    /// Заметка для блока «Заметка»: при фокусе на списке — выбранная в нём,
-    /// иначе — ближайшая к позиции чтения.
-    pub fn selected_bookmark(&self) -> Option<&Bookmark> {
-        if self.focus == ReaderFocus::Bookmarks {
-            self.bookmarks.get(self.bookmark_cursor)
-        } else {
-            let block = self.anchor().block;
-            self.bookmarks.iter().min_by_key(|b| b.anchor.block.abs_diff(block))
-        }
     }
 
     /// Текст текущего тоста в статус-баре, если он ещё не погас.

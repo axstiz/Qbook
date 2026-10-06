@@ -14,10 +14,8 @@ use crate::model::{BlockKind, LineInfo};
 use crate::parse::txt::{list_marker, strip_heading};
 use crate::ui::note_color;
 
-/// Высота блока «Заметка»: 2 борта + метка + подсказка.
-const NOTE_H: u16 = 4;
 /// Сколько команд показываем в блоке «Команды».
-const COMMANDS_MAX_ROWS: usize = 6;
+const COMMANDS_MAX_ROWS: usize = 12;
 
 /// Ниже этого покрытия в заголовке рамки появляется бейдж качества.
 const QUALITY_WARN: f32 = 0.9;
@@ -46,9 +44,9 @@ pub fn render(app: &App, frame: &mut Frame) {
         app.toc_visible(),
         app.bookmarks_visible() || app.commands_visible(),
     );
-    render_text(app, frame, center);
+    render_text(app, frame, center, app.focus() == ReaderFocus::Text);
     if let Some(left) = left {
-        render_toc(app, frame, left);
+        render_toc(app, frame, left, app.focus() == ReaderFocus::Toc);
     }
     if let Some(right) = right {
         render_right(app, frame, right);
@@ -107,7 +105,7 @@ fn split_columns(
     }
 }
 
-fn render_text(app: &App, frame: &mut Frame, area: Rect) {
+fn render_text(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     let inner = Rect {
         x: area.x + 1,
         y: area.y + 1,
@@ -117,7 +115,11 @@ fn render_text(app: &App, frame: &mut Frame, area: Rect) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let block = Block::bordered().border_type(BorderType::Rounded).title(title_line(app));
+    let border = if active { Style::new() } else { Style::new().fg(Color::DarkGray) };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(border)
+        .title(title_line(app));
     render_text_lines(app, frame, inner);
     let mut state = ScrollbarState::new(app.max_scroll()).position(app.scroll());
     frame.render_stateful_widget(
@@ -198,11 +200,18 @@ fn progress_bar(percent: f32) -> String {
 }
 
 /// Рамка в правой колонке со скруглёнными углами и подписанным заголовком.
-fn block_frame(title: &str) -> Block<'static> {
-    Block::bordered().border_type(BorderType::Rounded).title(Line::from(Span::styled(
-        title.to_string(),
-        Style::new().add_modifier(Modifier::BOLD),
-    )))
+/// Неактивный блок приглушается, активный остаётся ярким.
+fn block_frame(title: &str, active: bool) -> Block<'static> {
+    let title_style = if active {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+    };
+    let border = if active { Style::new() } else { Style::new().fg(Color::DarkGray) };
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(border)
+        .title(Line::from(Span::styled(title.to_string(), title_style)))
 }
 
 /// Рамка с внутренней областью для одного из блоков среды колонки.
@@ -216,7 +225,7 @@ fn inner_of(area: Rect) -> Rect {
 }
 
 /// Левая колонка «Главы»: активный раздел подсвечен, навигационный курсор `►`.
-fn render_toc(app: &App, frame: &mut Frame, area: Rect) {
+fn render_toc(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     let inner = inner_of(area);
     let items = app.document().toc();
     let mut lines: Vec<Line> = Vec::new();
@@ -249,25 +258,15 @@ fn render_toc(app: &App, frame: &mut Frame, area: Rect) {
         }
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame(" Главы "), area);
+    frame.render_widget(block_frame(" Главы ", active), area);
 }
 
-/// Правая колонка: сверху список заметок, под ним блок «Заметка» (всегда) и
-/// внизу список команд.
+/// Правая колонка: снизу список команд, над ним заметки.
 fn render_right(app: &App, frame: &mut Frame, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let note_h = NOTE_H.min(area.height);
-    let note_area =
-        Rect { x: area.x, y: area.y + area.height - note_h, width: area.width, height: note_h };
-    render_note(app, frame, note_area);
-    let mut above = Rect {
-        x: area.x,
-        y: area.y,
-        width: area.width,
-        height: area.height.saturating_sub(note_h),
-    };
+    let mut above = area;
     if app.commands_visible() && above.height >= 3 {
         let cmds_height = (COMMANDS.len().min(COMMANDS_MAX_ROWS) as u16 + 2).min(above.height);
         let cmds_area = Rect {
@@ -276,16 +275,16 @@ fn render_right(app: &App, frame: &mut Frame, area: Rect) {
             width: area.width,
             height: cmds_height,
         };
-        render_commands(app, frame, cmds_area);
+        render_commands(app, frame, cmds_area, app.focus() == ReaderFocus::Commands);
         above.height -= cmds_height;
     }
     if above.height > 0 {
-        render_bookmarks(app, frame, above);
+        render_bookmarks(app, frame, above, app.focus() == ReaderFocus::Bookmarks);
     }
 }
 
 /// Список заметок книги, упорядоченных по позиции, с курсором `►`.
-fn render_bookmarks(app: &App, frame: &mut Frame, area: Rect) {
+fn render_bookmarks(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     let inner = inner_of(area);
     let bookmarks = app.bookmarks();
     let rows = inner.height as usize;
@@ -296,76 +295,20 @@ fn render_bookmarks(app: &App, frame: &mut Frame, area: Rect) {
     }
     for (index, bookmark) in bookmarks.iter().enumerate().skip(start).take(rows) {
         let selected = index == app.bookmark_cursor();
-        let (marker, style) = if selected {
-            ("►", Style::new().add_modifier(Modifier::BOLD))
-        } else {
-            (" ", Style::new())
-        };
+        let style = if selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
         lines.push(Line::from(vec![
-            Span::styled(marker, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled(" ", style),
+            Span::styled("► ", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             Span::styled("● ", Style::new().fg(note_color(bookmark.color))),
             Span::styled(bookmark.label.clone(), style),
             Span::styled(format!(" · {}", format_date(bookmark.created_at)), style),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame(" Заметки "), area);
-}
-
-/// Блок «Заметка»: всегда на виду. Показывает заметку на позиции чтения
-/// (или выбранную в списке), а при вводе `b`/`r` — буфер и выбор цвета.
-fn render_note(app: &App, frame: &mut Frame, area: Rect) {
-    let inner = inner_of(area);
-    let mut lines: Vec<Line> = Vec::new();
-    if let Some(buffer) = app.typing_buffer() {
-        let purpose = app.typing_purpose();
-        let editing =
-            matches!(purpose, Some(InputPurpose::RenameBookmark | InputPurpose::NewBookmark));
-        if editing {
-            lines.push(Line::from(vec![
-                Span::styled("▸ ", Style::new().add_modifier(Modifier::BOLD)),
-                Span::raw(format!("{buffer}_")),
-            ]));
-            if let Some(color) = app.pending_bookmark_color() {
-                lines.push(Line::from(vec![
-                    Span::styled("● ", Style::new().fg(note_color(color))),
-                    Span::raw(format!("цвет · {} · c/C · Enter", App::note_color_name(color))),
-                ]));
-            } else {
-                lines.push(Line::from(Span::styled(
-                    "Enter — сохранить · Esc — отмена",
-                    Style::new().add_modifier(Modifier::DIM),
-                )));
-            }
-        }
-    }
-    if lines.is_empty()
-        && let Some(bookmark) = app.selected_bookmark()
-    {
-        lines.push(Line::from(vec![
-            Span::styled("● ", Style::new().fg(note_color(bookmark.color))),
-            Span::styled(bookmark.label.clone(), Style::new().add_modifier(Modifier::BOLD)),
-        ]));
-        lines.push(Line::from(Span::styled(
-            format!("цвет · {} · r правка · c/C", App::note_color_name(bookmark.color)),
-            Style::new().add_modifier(Modifier::DIM),
-        )));
-    }
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "нет заметок",
-            Style::new().add_modifier(Modifier::DIM),
-        )));
-        lines.push(Line::from(Span::raw("b — поставить здесь")));
-    }
-    lines.truncate(inner.height as usize);
-    frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame(" Заметка "), area);
+    frame.render_widget(block_frame(" Заметки ", active), area);
 }
 
 /// Список полезных команд: Enter подставляет выбранную в командную строку.
-fn render_commands(app: &App, frame: &mut Frame, area: Rect) {
+fn render_commands(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     let inner = inner_of(area);
     let rows = inner.height as usize;
     let start = app.command_cursor().saturating_sub(rows.saturating_sub(1));
@@ -387,14 +330,15 @@ fn render_commands(app: &App, frame: &mut Frame, area: Rect) {
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame(" Команды "), area);
+    frame.render_widget(block_frame(" Команды ", active), area);
 }
 
 /// Слот над баром: командная строка `:`, ввод метки заметки или тост.
 fn render_slot(app: &App, frame: &mut Frame, y: u16, width: u16) {
     let slot = Rect { x: 0, y, width, height: 1 };
     let line = if let Some(buffer) = app.typing_buffer() {
-        let label = match app.typing_purpose() {
+        let purpose = app.typing_purpose();
+        let label = match purpose {
             Some(InputPurpose::Command) => ":",
             _ => "Заметка:",
         };
@@ -402,8 +346,21 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, width: u16) {
             Span::styled(label, Style::new().add_modifier(Modifier::BOLD)),
             Span::raw(format!(" {buffer}_")),
         ];
-        if let Some(color) = app.pending_bookmark_color() {
-            spans.push(Span::styled(" ●", Style::new().fg(note_color(color))));
+        match purpose {
+            Some(InputPurpose::NewBookmark) => {
+                if let Some(color) = app.pending_bookmark_color() {
+                    spans.push(Span::styled(" ●", Style::new().fg(note_color(color))));
+                    spans
+                        .push(Span::raw(format!(" {} · c/C · Enter", App::note_color_name(color))));
+                }
+            }
+            Some(InputPurpose::RenameBookmark) => {
+                spans.push(Span::styled(
+                    "  Enter — сохранить · Esc — отмена",
+                    Style::new().add_modifier(Modifier::DIM),
+                ));
+            }
+            _ => {}
         }
         Some(Line::from(spans))
     } else {
@@ -455,7 +412,7 @@ fn render_help(frame: &mut Frame, center: Rect) {
     let inner =
         Rect { x: area.x + 1, y: area.y + 1, width: width.saturating_sub(2), height: height - 2 };
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame(" Справка "), area);
+    frame.render_widget(block_frame(" Справка ", true), area);
 }
 
 const HELP: &[&str] = &[

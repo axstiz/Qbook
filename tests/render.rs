@@ -226,7 +226,6 @@ fn bookmarks_panel_shows_labels_with_the_selection_bold() {
     let (lines, buffer) = draw(&mut app, 96, 12);
     let all = lines.join("\n");
     assert!(all.contains("Заметки"), "заголовок панели: {all}");
-    assert!(all.contains("Заметка"), "блок замечания: {all}");
     assert!(all.contains("Абзац номер 0"), "метка в панели: {all}");
     assert!(all.contains('●'), "цветная точка заметки в панели: {all}");
 
@@ -341,7 +340,7 @@ fn wide_window_shows_columns_and_highlights_the_active_heading() {
     app.set_size(120, 16);
     let (lines, buffer) = screen(&mut app, 120, 16);
     let all = lines.join("\n");
-    for title in ["Главы", "Заметки", "Заметка", "Команды"] {
+    for title in ["Главы", "Заметки", "Команды"] {
         assert!(all.contains(title), "колонка «{title}» на экране: {all}");
     }
 
