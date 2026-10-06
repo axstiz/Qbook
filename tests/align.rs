@@ -1,6 +1,6 @@
 //! Выравнивание: синтетические сценарии (метрика M1) и перевод якорей.
 
-use qbook::align::{align, align_dp};
+use qbook::align::{Alignment, align, align_dp};
 use qbook::model::{Anchor, Block, BlockKind, Document};
 
 fn doc(texts: &[&str]) -> Document {
@@ -170,4 +170,24 @@ fn out_of_range_anchor_is_clamped() {
     let a = align(&doc(&texts), &doc(&texts));
     assert_eq!(a.translate_base_to_var(Anchor::new(99, 0.9)), Anchor::new(5, 0.9));
     assert_eq!(a.translate_var_to_base(Anchor::new(99, 0.9)), Anchor::new(5, 0.9));
+}
+
+#[test]
+fn alignment_is_restorable_from_a_cached_map() {
+    let base = doc(&six_paragraphs());
+    let var = doc(&six_paragraphs());
+    let original = align_dp(&base, &var);
+    let restored = Alignment::from_map(&original.base_to_var, base.len(), var.len());
+
+    assert_eq!(restored.base_to_var, original.base_to_var);
+    assert_eq!(restored.var_to_base, original.var_to_base);
+    assert!((restored.coverage() - original.coverage()).abs() < 1e-6);
+    assert_eq!(
+        restored.translate_base_to_var(Anchor::new(2, 0.5)),
+        original.translate_base_to_var(Anchor::new(2, 0.5))
+    );
+    assert_eq!(
+        restored.translate_var_to_base(Anchor::new(4, 0.25)),
+        original.translate_var_to_base(Anchor::new(4, 0.25))
+    );
 }

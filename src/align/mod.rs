@@ -122,6 +122,13 @@ impl Alignment {
         }
     }
 
+    /// Восстановление из кэшированной карты (хранилище): пары собираются заново.
+    pub fn from_map(map: &[Option<usize>], n_base: usize, n_var: usize) -> Self {
+        let pairs: Vec<(usize, usize)> =
+            map.iter().enumerate().filter_map(|(i, &j)| j.map(|j| (i, j))).collect();
+        Self::from_pairs(&pairs, n_base, n_var)
+    }
+
     pub fn coverage(&self) -> f32 {
         self.coverage
     }

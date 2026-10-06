@@ -119,7 +119,7 @@ fn heading(line: &str) -> Option<(u8, &str)> {
 }
 
 /// Маркер списка: `- `, `* `, `+ `, `1. `, `10) `.
-fn list_marker(line: &str) -> Option<&str> {
+pub(crate) fn list_marker(line: &str) -> Option<&str> {
     let t = line.trim_start();
     let bullet = t.strip_prefix(['-', '*', '+']).filter(|r| r.starts_with(' ')).map(|r| &r[1..]);
     if bullet.is_some() {
