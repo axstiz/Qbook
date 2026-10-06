@@ -17,7 +17,7 @@ fn touch(path: &Path) {
 #[test]
 fn parses_path_with_defaults() {
     let cli = Cli::try_parse_from(["qbook", "book.epub"]).expect("разбор");
-    assert_eq!(cli.path, PathBuf::from("book.epub"));
+    assert_eq!(cli.path, Some(PathBuf::from("book.epub")));
     assert_eq!(cli.lang, "en");
     assert!(cli.variants.is_empty());
 }
@@ -53,8 +53,9 @@ fn rejects_variant_without_path() {
 }
 
 #[test]
-fn rejects_missing_path() {
-    Cli::try_parse_from(["qbook"]).expect_err("путь обязателен");
+fn without_a_path_the_shelf_will_open() {
+    let cli = Cli::try_parse_from(["qbook"]).expect("путь не обязателен");
+    assert!(cli.path.is_none());
 }
 
 #[test]

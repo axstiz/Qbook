@@ -1,6 +1,6 @@
 //! SQLite-хранилище: книги, варианты, прогресс, закладки, кэш выравнивания.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -11,7 +11,8 @@ use crate::model::{Anchor, BlockKind, Document};
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// Одна миграция на шаг `user_version`; индекс 0 отвечает за версию 1.
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE IF NOT EXISTS books (
         id INTEGER PRIMARY KEY,
         path TEXT NOT NULL UNIQUE,
@@ -54,7 +55,9 @@ const MIGRATIONS: &[&str] = &["
         coverage REAL NOT NULL,
         PRIMARY KEY (book_id, lang)
     );
-"];
+",
+    "ALTER TABLE progress ADD COLUMN percent REAL NOT NULL DEFAULT 0.0",
+];
 
 /// Кэшированная карта: сама карта и покрытие.
 pub type CachedAlignment = (Vec<Option<usize>>, f32);
@@ -96,6 +99,8 @@ pub struct Variant {
 pub struct Progress {
     pub anchor: Anchor,
     pub variant_lang: String,
+    /// Прогресс чтения в процентах — его показывает полка без знания документа.
+    pub percent: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,14 +115,22 @@ pub struct Bookmark {
 /// Открытое хранилище. Один экземпляр = одно соединение SQLite.
 pub struct Store {
     conn: Connection,
+    path: PathBuf,
 }
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let conn = Connection::open(path)?;
+        let path = path.as_ref().to_path_buf();
+        let conn = Connection::open(&path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         migrate(&conn)?;
-        Ok(Self { conn })
+        Ok(Self { conn, path })
+    }
+
+    /// Новое соединение с тем же файлом — для попыток, которые не должны
+    /// терять основное соединение при ошибке.
+    pub fn reopen(&self) -> Result<Self, StoreError> {
+        Self::open(&self.path)
     }
 
     /// Открыть (создав каталог) хранилище `qbook.db` внутри директории.
@@ -148,7 +161,7 @@ impl Store {
         let stamp = now();
         self.conn.execute(
             "INSERT INTO books (path, title, base_lang, added_at, last_opened_at, mtime, size)
-             VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)
              ON CONFLICT(path) DO NOTHING",
             params![path, title, base_lang, stamp, mtime, size],
         )?;
@@ -232,13 +245,14 @@ impl Store {
         book_id: i64,
         anchor: Anchor,
         variant_lang: &str,
+        percent: f32,
     ) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO progress (book_id, anchor_block, anchor_frac, variant_lang, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO progress (book_id, anchor_block, anchor_frac, variant_lang, updated_at, percent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(book_id) DO UPDATE SET
-                anchor_block = ?2, anchor_frac = ?3, variant_lang = ?4, updated_at = ?5",
-            params![book_id, anchor.block as i64, anchor.frac as f64, variant_lang, now()],
+                anchor_block = ?2, anchor_frac = ?3, variant_lang = ?4, updated_at = ?5, percent = ?6",
+            params![book_id, anchor.block as i64, anchor.frac as f64, variant_lang, now(), percent],
         )?;
         Ok(())
     }
@@ -247,7 +261,8 @@ impl Store {
         let progress = self
             .conn
             .query_row(
-                "SELECT anchor_block, anchor_frac, variant_lang FROM progress WHERE book_id = ?1",
+                "SELECT anchor_block, anchor_frac, variant_lang, percent
+                 FROM progress WHERE book_id = ?1",
                 [book_id],
                 |row| {
                     let block: i64 = row.get(0)?;
@@ -255,6 +270,7 @@ impl Store {
                     Ok(Progress {
                         anchor: Anchor::new(block as usize, frac as f32),
                         variant_lang: row.get(2)?,
+                        percent: row.get(3)?,
                     })
                 },
             )

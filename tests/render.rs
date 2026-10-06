@@ -129,3 +129,97 @@ fn renders_in_a_single_line_terminal() {
     assert!(lines[0].contains('%'), "статус занимает всю строку: {:?}", lines[0]);
     assert!(!lines[0].contains("Абзац"), "места под текст не осталось: {:?}", lines[0]);
 }
+
+fn draw(app: &mut App, width: u16, height: u16) -> (Vec<String>, Buffer) {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("терминал");
+    terminal.draw(|frame| qbook::ui::render(app, frame)).expect("отрисовка");
+    let buffer = terminal.backend().buffer().clone();
+    let lines = (0..height)
+        .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect();
+    (lines, buffer)
+}
+
+fn shelf_app_with_one_book() -> (TempDir, App) {
+    let tmp = dir();
+    let store = qbook::store::Store::open(tmp.path().join("qbook.db")).expect("хранилище");
+    let id =
+        store.add_book("/books/war.md", "Война и мир", "en", 1_700_000_000, 100).expect("книга");
+    store.set_variant(id, "ru", "/books/war.ru.md", "md").expect("вариант");
+    store.set_progress(id, qbook::model::Anchor::START, "en", 42.5).expect("прогресс");
+    let app = App::shelf(Some(store), "en").expect("полка");
+    (tmp, app)
+}
+
+#[test]
+fn shelf_renders_title_langs_percent_and_date() {
+    let (_tmp, mut app) = shelf_app_with_one_book();
+    let (lines, _) = draw(&mut app, 80, 8);
+    let all = lines.join("\n");
+    assert!(all.contains("Полка"), "заголовок полки: {all}");
+    assert!(all.contains("Война и мир"), "заголовок книги: {all}");
+    assert!(all.contains("42.5"), "прогресс: {all}");
+    assert!(all.contains("2023-11-14"), "дата добавления: {all}");
+    assert!(all.contains("en"), "базовый язык: {all}");
+    assert!(all.contains("ru"), "перевод: {all}");
+    let cursor = lines.iter().find(|l| l.contains("Война и мир")).expect("строка книги");
+    assert!(cursor.starts_with('>'), "курсор полки отмечен: {cursor}");
+}
+
+fn app_with_store_and_bookmarks() -> (TempDir, App) {
+    let tmp = dir();
+    std::fs::write(tmp.path().join("book.md"), paragraphs(60)).expect("файл");
+    let store = qbook::store::Store::open(tmp.path().join("qbook.db")).expect("хранилище");
+    let mut app = App::load(&tmp.path().join("book.md"), "en", &[], Some(store)).expect("загрузка");
+    app.set_size(50, 12);
+    app.set_scroll(0);
+    use crossterm::event::{KeyCode, KeyModifiers};
+    app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+    app.set_scroll(app.max_scroll());
+    app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+    app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Char('B'), KeyModifiers::NONE));
+    (tmp, app)
+}
+
+#[test]
+fn bookmarks_panel_shows_labels_with_the_selection_bold() {
+    let (_tmp, mut app) = app_with_store_and_bookmarks();
+    let (lines, buffer) = draw(&mut app, 50, 12);
+    let all = lines.join("\n");
+    assert!(all.contains("Закладки:"), "заголовок панели: {all}");
+    assert!(all.contains("Абзац номер 0"), "метка в панели: {all}");
+
+    let selected_row = lines
+        .iter()
+        .position(|l| l.starts_with('>') && l.contains("Абзац"))
+        .expect("выделенная строка панели");
+    let bold = (0..50u16)
+        .any(|x| buffer[(x, selected_row as u16)].style().add_modifier.contains(Modifier::BOLD));
+    assert!(bold, "выбранная закладка подчёркнута жирным");
+}
+
+#[test]
+fn prompt_line_renders_typed_path() {
+    let tmp = dir();
+    let store = qbook::store::Store::open(tmp.path().join("qbook.db")).expect("хранилище");
+    let mut app = App::shelf(Some(store), "en").expect("полка");
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    app.handle_key(key('a'));
+    for c in "/books/war.md".chars() {
+        app.handle_key(key(c));
+    }
+    let (lines, _) = draw(&mut app, 60, 6);
+    let all = lines.join("\n");
+    assert!(all.contains("Путь:"), "подпись prompt: {all}");
+    assert!(all.contains("/books/war.md"), "введённый путь: {all}");
+}
+
+#[test]
+fn status_bar_highlights_the_bookmark_label() {
+    let (_tmp, mut app) = app_with_store_and_bookmarks();
+    app.set_scroll(0);
+    let (lines, _) = draw(&mut app, 60, 8);
+    let status = lines.last().expect("статус");
+    assert!(status.contains("Абзац номер 0"), "метка закладки в статусе: {status}");
+}

@@ -14,7 +14,7 @@ use crate::parse::txt::{list_marker, strip_heading};
 /// Ниже этого покрытия статус-бар подсвечивает качество выравнивания.
 const QUALITY_WARN: f32 = 0.9;
 /// Полная подсказка нуждается в ширине; узкий терминал получает только неё.
-const HINT_WIDE: &str = " · j/k прокрутка · L язык · q выход";
+const HINT_WIDE: &str = " · j/k · L язык · B закладки · l полка · q выход";
 const HINT_NARROW: &str = " j/k L q";
 const HINT_WIDE_AT: u16 = 70;
 
@@ -94,8 +94,7 @@ fn strip_marker(kind: BlockKind, text: &str) -> String {
 fn status_line(app: &App, width: u16) -> Line<'static> {
     let total = app.document().len();
     let block = app.anchor().block + 1;
-    let max = app.max_scroll();
-    let percent = if max == 0 { 100.0 } else { app.scroll() as f32 / max as f32 * 100.0 };
+    let percent = app.percent();
     let mut spans = vec![
         Span::raw(format!(" {} · ", app.title())),
         Span::styled(langs(app), Style::new().add_modifier(Modifier::BOLD)),
@@ -106,6 +105,9 @@ fn status_line(app: &App, width: u16) -> Line<'static> {
             format!(" · ⚠ {:.0}%", coverage * 100.0),
             Style::new().fg(Color::Yellow),
         ));
+    }
+    if let Some(bookmark) = app.bookmark_at() {
+        spans.push(Span::styled(format!(" · {}", bookmark.label), Style::new().fg(Color::Cyan)));
     }
     let hint = if width >= HINT_WIDE_AT { HINT_WIDE } else { HINT_NARROW };
     spans.push(Span::styled(hint, Style::new().add_modifier(Modifier::DIM)));

@@ -9,7 +9,7 @@ use crate::align::{Alignment, align};
 use crate::cli::find_sidecars;
 use crate::model::{Anchor, Document, Layout, anchor_to_scroll, scroll_to_anchor};
 use crate::parse;
-use crate::store::{Store, StoreError, document_hash};
+use crate::store::{Bookmark, Store, StoreError, document_hash};
 
 /// Период автосохранения прогресса.
 const SAVE_INTERVAL: Duration = Duration::from_secs(5);
@@ -26,6 +26,41 @@ pub enum AppError {
     Parse(#[from] parse::ParseError),
     #[error(transparent)]
     Store(#[from] StoreError),
+}
+
+/// Экран приложения: полка или читалка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    Shelf,
+    Reader,
+}
+
+/// Что именно набирает пользователь в prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputPurpose {
+    AddBook,
+    RenameBookmark,
+}
+
+/// Строка полки, готовая к отрисовке.
+#[derive(Debug, Clone)]
+pub struct ShelfBook {
+    pub book_id: i64,
+    pub title: String,
+    pub path: String,
+    pub base_lang: String,
+    /// Базовый язык и все варианты перевода, по алфавиту после базы.
+    pub langs: Vec<String>,
+    pub percent: f32,
+    /// Дата последнего открытия, а до первого открытия — дата файла (unix).
+    pub date: i64,
+}
+
+struct Typing {
+    purpose: InputPurpose,
+    buffer: String,
+    /// Какую закладку переименовываем.
+    bookmark_id: Option<i64>,
 }
 
 struct Variant {
@@ -48,6 +83,17 @@ pub struct App {
     pending_anchor: Option<Anchor>,
     quit: bool,
     last_save: Instant,
+    screen: Screen,
+    shelf_books: Vec<ShelfBook>,
+    shelf_cursor: usize,
+    shelf_error: Option<String>,
+    typing: Option<Typing>,
+    /// Кэш закладок текущей книги, отсортирован по позиции.
+    bookmarks: Vec<Bookmark>,
+    bookmarks_open: bool,
+    bookmark_cursor: usize,
+    /// Язык по умолчанию для книг, добавляемых через prompt.
+    default_lang: String,
 }
 
 impl App {
@@ -79,7 +125,9 @@ impl App {
 
         let book_id = if let Some(store) = &store {
             let (mtime, size) = file_stamp(path);
-            Some(store.add_book(&path.display().to_string(), &title, base_lang, mtime, size)?)
+            let id = store.add_book(&path.display().to_string(), &title, base_lang, mtime, size)?;
+            let _ = store.touch_book(id);
+            Some(id)
         } else {
             None
         };
@@ -125,7 +173,88 @@ impl App {
             pending_anchor: progress.map(|p| p.anchor),
             quit: false,
             last_save: Instant::now(),
+            screen: Screen::Reader,
+            shelf_books: Vec::new(),
+            shelf_cursor: 0,
+            shelf_error: None,
+            typing: None,
+            bookmarks: Vec::new(),
+            bookmarks_open: false,
+            bookmark_cursor: 0,
+            default_lang: base_lang.to_owned(),
         })
+    }
+
+    /// Полка: список книг из хранилища. Книга открывается клавишей `Enter`.
+    pub fn shelf(store: Option<Store>, default_lang: &str) -> Result<Self, AppError> {
+        let doc = Document::new(default_lang, "", Vec::new());
+        let layout = Layout::new(&doc, DEFAULT_WIDTH - TEXT_PAD);
+        let mut app = Self {
+            variants: vec![Variant { lang: default_lang.to_owned(), doc, alignment: None }],
+            current: 0,
+            scroll: 0,
+            layout,
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
+            store,
+            book_id: None,
+            pending_anchor: None,
+            quit: false,
+            last_save: Instant::now(),
+            screen: Screen::Shelf,
+            shelf_books: Vec::new(),
+            shelf_cursor: 0,
+            shelf_error: None,
+            typing: None,
+            bookmarks: Vec::new(),
+            bookmarks_open: false,
+            bookmark_cursor: 0,
+            default_lang: default_lang.to_owned(),
+        };
+        app.reload_shelf();
+        Ok(app)
+    }
+
+    pub fn screen(&self) -> Screen {
+        self.screen
+    }
+
+    pub fn shelf_books(&self) -> &[ShelfBook] {
+        &self.shelf_books
+    }
+
+    pub fn shelf_cursor(&self) -> usize {
+        self.shelf_cursor
+    }
+
+    pub fn shelf_error(&self) -> Option<&str> {
+        self.shelf_error.as_deref()
+    }
+
+    pub fn typing_buffer(&self) -> Option<&str> {
+        self.typing.as_ref().map(|t| t.buffer.as_str())
+    }
+
+    pub fn typing_purpose(&self) -> Option<InputPurpose> {
+        self.typing.as_ref().map(|t| t.purpose)
+    }
+
+    pub fn bookmarks(&self) -> &[Bookmark] {
+        &self.bookmarks
+    }
+
+    pub fn bookmarks_open(&self) -> bool {
+        self.bookmarks_open
+    }
+
+    pub fn bookmark_cursor(&self) -> usize {
+        self.bookmark_cursor
+    }
+
+    /// Закладка на текущем блоке — её метку показывает статус-бар.
+    pub fn bookmark_at(&self) -> Option<&Bookmark> {
+        let block = self.anchor().block;
+        self.bookmarks.iter().find(|b| b.anchor.block == block)
     }
 
     pub fn languages(&self) -> Vec<&str> {
@@ -224,6 +353,18 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if self.typing.is_some() {
+            self.handle_typing(key);
+        } else if self.screen == Screen::Shelf {
+            self.handle_shelf_key(key);
+        } else if self.bookmarks_open {
+            self.handle_panel_key(key);
+        } else {
+            self.handle_reader_key(key);
+        }
+    }
+
+    fn handle_reader_key(&mut self, key: KeyEvent) {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('q') => self.quit = true,
@@ -240,14 +381,305 @@ impl App {
             }
             KeyCode::Char('g') => self.scroll = 0,
             KeyCode::Char('G') => self.scroll = self.max_scroll(),
-            KeyCode::Char('l' | 'L') => {
+            KeyCode::Char('L') => {
                 self.next_lang();
             }
             KeyCode::Char(c @ '1'..='9') => {
                 self.switch_lang(c as usize - '1' as usize);
             }
+            KeyCode::Char('l') => self.go_shelf(),
+            KeyCode::Char('b') => self.add_bookmark(),
+            KeyCode::Char('B') => self.toggle_bookmarks(),
+            KeyCode::Char('n') => self.jump_bookmark(true),
+            KeyCode::Char('p') => self.jump_bookmark(false),
             _ => {}
         }
+    }
+
+    fn handle_shelf_key(&mut self, key: KeyEvent) {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('c') if control => self.quit = true,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.shelf_cursor =
+                    (self.shelf_cursor + 1).min(self.shelf_books.len().saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.shelf_cursor = self.shelf_cursor.saturating_sub(1);
+            }
+            KeyCode::Enter => self.open_selected(),
+            KeyCode::Char('a') => {
+                self.shelf_error = None;
+                self.typing = Some(Typing {
+                    purpose: InputPurpose::AddBook,
+                    buffer: String::new(),
+                    bookmark_id: None,
+                });
+            }
+            KeyCode::Char('d') => self.delete_selected(),
+            _ => {}
+        }
+    }
+
+    fn handle_panel_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('B') | KeyCode::Char('q') => {
+                self.bookmarks_open = false;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.bookmark_cursor =
+                    (self.bookmark_cursor + 1).min(self.bookmarks.len().saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.bookmark_cursor = self.bookmark_cursor.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                if let Some(bookmark) = self.bookmarks.get(self.bookmark_cursor).cloned() {
+                    self.goto_anchor(bookmark.anchor);
+                    self.bookmarks_open = false;
+                }
+            }
+            KeyCode::Char('r') => {
+                if let Some(bookmark) = self.bookmarks.get(self.bookmark_cursor) {
+                    self.typing = Some(Typing {
+                        purpose: InputPurpose::RenameBookmark,
+                        buffer: String::new(),
+                        bookmark_id: Some(bookmark.id),
+                    });
+                }
+            }
+            KeyCode::Char('D') => self.delete_selected_bookmark(),
+            _ => {}
+        }
+    }
+
+    fn handle_typing(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.typing = None;
+                self.shelf_error = None;
+            }
+            KeyCode::Enter => self.commit_typing(),
+            KeyCode::Backspace => {
+                if let Some(t) = &mut self.typing {
+                    t.buffer.pop();
+                }
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(t) = &mut self.typing {
+                    t.buffer.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn commit_typing(&mut self) {
+        let Some(typing) = self.typing.take() else { return };
+        match typing.purpose {
+            InputPurpose::AddBook => {
+                let path = PathBuf::from(&typing.buffer);
+                match self.register_book(&path) {
+                    Ok(()) => self.shelf_error = None,
+                    Err(message) => {
+                        self.shelf_error = Some(message);
+                        self.typing = Some(typing);
+                    }
+                }
+            }
+            InputPurpose::RenameBookmark => {
+                if let Some(id) = typing.bookmark_id
+                    && let Some(store) = &self.store
+                {
+                    let _ = store.rename_bookmark(id, &typing.buffer);
+                    if let Some(bookmark) = self.bookmarks.iter_mut().find(|b| b.id == id) {
+                        bookmark.label = typing.buffer;
+                    }
+                }
+            }
+        }
+    }
+
+    fn register_book(&mut self, path: &Path) -> Result<(), String> {
+        let doc = parse::load(path, &self.default_lang).map_err(|e| e.to_string())?;
+        let title = doc.title().to_owned();
+        let (mtime, size) = file_stamp(path);
+        let key = path.display().to_string();
+        let lang = self.default_lang.clone();
+        let Some(store) = self.store.as_ref() else {
+            return Err("нет открытого хранилища".to_owned());
+        };
+        store.add_book(&key, &title, &lang, mtime, size).map_err(|e| e.to_string())?;
+        self.reload_shelf();
+        Ok(())
+    }
+
+    fn reload_shelf(&mut self) {
+        self.shelf_books.clear();
+        let Some(store) = &self.store else {
+            self.shelf_cursor = 0;
+            return;
+        };
+        match store.list_books() {
+            Ok(books) => {
+                for book in books {
+                    let mut langs = vec![book.base_lang.clone()];
+                    let mut extra: Vec<String> = store
+                        .variants(book.id)
+                        .map(|list| list.into_iter().map(|v| v.lang).collect())
+                        .unwrap_or_default();
+                    extra.sort();
+                    langs.extend(extra);
+                    let percent =
+                        store.get_progress(book.id).ok().flatten().map_or(0.0, |p| p.percent);
+                    let date =
+                        if book.last_opened_at > 0 { book.last_opened_at } else { book.mtime };
+                    self.shelf_books.push(ShelfBook {
+                        book_id: book.id,
+                        title: book.title,
+                        path: book.path,
+                        base_lang: book.base_lang,
+                        langs,
+                        percent,
+                        date,
+                    });
+                }
+                self.shelf_cursor = self.shelf_cursor.min(self.shelf_books.len().saturating_sub(1));
+            }
+            Err(err) => self.shelf_error = Some(err.to_string()),
+        }
+    }
+
+    fn open_selected(&mut self) {
+        let Some(item) = self.shelf_books.get(self.shelf_cursor).cloned() else { return };
+        let default_lang = self.default_lang.clone();
+        // Пробуем через новое соединение: при ошибке основное не теряется.
+        let store = match &self.store {
+            Some(store) => store.reopen().ok(),
+            None => None,
+        };
+        match App::load(Path::new(&item.path), &item.base_lang, &[], store) {
+            Ok(mut app) => {
+                app.default_lang = default_lang;
+                *self = app;
+            }
+            Err(err) => {
+                self.shelf_error = Some(err.to_string());
+            }
+        }
+    }
+
+    fn delete_selected(&mut self) {
+        let Some(item) = self.shelf_books.get(self.shelf_cursor) else { return };
+        let id = item.book_id;
+        if let Some(store) = &self.store
+            && let Err(err) = store.delete_book(id)
+        {
+            self.shelf_error = Some(err.to_string());
+            return;
+        }
+        self.shelf_error = None;
+        self.reload_shelf();
+    }
+
+    fn go_shelf(&mut self) {
+        let _ = self.save_progress();
+        self.screen = Screen::Shelf;
+        self.bookmarks_open = false;
+        self.typing = None;
+        self.shelf_error = None;
+        self.bookmarks.clear();
+        self.reload_shelf();
+    }
+
+    fn toggle_bookmarks(&mut self) {
+        if self.bookmarks_open {
+            self.bookmarks_open = false;
+            return;
+        }
+        self.reload_bookmarks();
+        let block = self.anchor().block;
+        self.bookmark_cursor = self
+            .bookmarks
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, b)| b.anchor.block.abs_diff(block))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        self.bookmarks_open = true;
+    }
+
+    fn add_bookmark(&mut self) {
+        if self.book_id.is_none() || self.store.is_none() {
+            return;
+        }
+        self.resolve_pending();
+        let anchor = self.anchor();
+        let text = self.document().block(anchor.block).map_or("", |b| b.text.as_str());
+        let label = snippet(text);
+        let store = self.store.as_ref().expect("store проверен");
+        let id = self.book_id.expect("book_id проверен");
+        if store.add_bookmark(id, anchor, &label).is_ok() {
+            self.reload_bookmarks();
+        }
+    }
+
+    fn reload_bookmarks(&mut self) {
+        self.bookmarks.clear();
+        let (Some(store), Some(id)) = (&self.store, self.book_id) else { return };
+        if let Ok(mut list) = store.list_bookmarks(id) {
+            list.sort_by_key(|b| b.anchor.block);
+            self.bookmarks = list;
+        }
+        self.bookmark_cursor = self.bookmark_cursor.min(self.bookmarks.len().saturating_sub(1));
+    }
+
+    fn delete_selected_bookmark(&mut self) {
+        let Some(bookmark) = self.bookmarks.get(self.bookmark_cursor) else { return };
+        let id = bookmark.id;
+        if let Some(store) = &self.store {
+            let _ = store.delete_bookmark(id);
+        }
+        self.reload_bookmarks();
+    }
+
+    /// Следующая (`forward`) или предыдущая закладка по позиции в базе.
+    fn jump_bookmark(&mut self, forward: bool) {
+        if self.screen != Screen::Reader {
+            return;
+        }
+        self.reload_bookmarks();
+        let current = self.anchor().block;
+        let target = if forward {
+            self.bookmarks
+                .iter()
+                .filter(|b| b.anchor.block > current)
+                .min_by_key(|b| b.anchor.block)
+        } else {
+            self.bookmarks
+                .iter()
+                .filter(|b| b.anchor.block < current)
+                .max_by_key(|b| b.anchor.block)
+        }
+        .cloned();
+        if let Some(bookmark) = target {
+            self.goto_anchor(bookmark.anchor);
+        }
+    }
+
+    /// Перейти к якорю в базовых терминах (закладки хранятся в базе).
+    fn goto_anchor(&mut self, anchor: Anchor) {
+        self.resolve_pending();
+        let translated = if self.current == 0 {
+            anchor
+        } else {
+            self.variants[self.current]
+                .alignment
+                .as_ref()
+                .map_or(anchor, |a| a.translate_base_to_var(anchor))
+        };
+        self.scroll = anchor_to_scroll(&self.layout, self.document(), translated);
     }
 
     /// Колесо мыши: `up` — к началу, иначе к концу.
@@ -256,12 +688,19 @@ impl App {
         self.scroll_by(delta);
     }
 
+    /// Прогресс чтения в процентах (0..=100).
+    pub fn percent(&self) -> f32 {
+        let max = self.max_scroll();
+        if max == 0 { 100.0 } else { self.scroll as f32 / max as f32 * 100.0 }
+    }
+
     /// Сохранить позицию и текущий язык в хранилище.
     pub fn save_progress(&mut self) -> Result<(), StoreError> {
         if let (Some(store), Some(book_id)) = (&self.store, self.book_id) {
             let anchor = self.anchor();
             let lang = self.current_lang().to_owned();
-            store.set_progress(book_id, anchor, &lang)?;
+            let percent = self.percent();
+            store.set_progress(book_id, anchor, &lang, percent)?;
             self.last_save = Instant::now();
         }
         Ok(())
@@ -346,4 +785,24 @@ fn file_stamp(path: &Path) -> (i64, i64) {
             .map_or(0, |age| age.as_secs() as i64);
         (mtime, meta.len() as i64)
     })
+}
+
+/// Короткая метка закладки: текст абзаца без маркеров, не длиннее 30 знаков.
+fn snippet(text: &str) -> String {
+    let mut t = text.trim();
+    t = t.trim_start_matches('#').trim_start();
+    t = t.trim_start_matches('>').trim_start();
+    if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+        t = rest;
+    } else {
+        let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits > 0 && digits < 3 && t[digits..].starts_with(". ") {
+            t = &t[digits + 2..];
+        }
+    }
+    let mut label: String = t.chars().take(30).collect();
+    if t.chars().count() > 30 {
+        label.push('…');
+    }
+    label
 }

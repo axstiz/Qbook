@@ -13,12 +13,12 @@ fn fresh_database_migrates_and_survives_reopen() {
     let path = dir.path().join("qbook.db");
     {
         let store = Store::open(&path).expect("открытие");
-        assert_eq!(store.user_version().expect("версия"), 1);
+        assert_eq!(store.user_version().expect("версия"), 2);
         assert!(store.list_books().expect("список пуст").is_empty());
     }
     {
         let store = Store::open(&path).expect("повторное открытие");
-        assert_eq!(store.user_version().expect("версия"), 1);
+        assert_eq!(store.user_version().expect("версия"), 2);
         assert!(store.list_books().expect("список пуст").is_empty());
     }
 }
@@ -68,12 +68,13 @@ fn progress_round_trip_upserts() {
     let id = store.add_book("/b.epub", "T", "ru", 1, 1).expect("книга");
 
     assert!(store.get_progress(id).expect("чтение").is_none());
-    store.set_progress(id, Anchor::new(42, 0.25), "en").expect("запись");
-    store.set_progress(id, Anchor::new(7, 0.5), "ru").expect("перезапись");
+    store.set_progress(id, Anchor::new(42, 0.25), "en", 12.5).expect("запись");
+    store.set_progress(id, Anchor::new(7, 0.5), "ru", 63.0).expect("перезапись");
 
     let p: Progress = store.get_progress(id).expect("чтение").expect("есть");
     assert_eq!(p.anchor, Anchor::new(7, 0.5));
     assert_eq!(p.variant_lang, "ru");
+    assert!((p.percent - 63.0).abs() < 1e-6);
 }
 
 #[test]
@@ -107,7 +108,7 @@ fn deleting_a_book_cascades() {
     let store = Store::open(dir.path().join("qbook.db")).expect("открытие");
     let id = store.add_book("/b.epub", "T", "ru", 1, 1).expect("книга");
     store.set_variant(id, "en", "/b.en.epub", "epub").expect("вариант");
-    store.set_progress(id, Anchor::START, "ru").expect("прогресс");
+    store.set_progress(id, Anchor::START, "ru", 0.0).expect("прогресс");
     store.add_bookmark(id, Anchor::START, "").expect("закладка");
     store.save_alignment(id, "en", 1, 2, &[Some(0)], 1.0).expect("кэш");
 

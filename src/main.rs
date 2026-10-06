@@ -9,11 +9,15 @@ use qbook::app::App;
 use qbook::cli::Cli;
 use qbook::event;
 use qbook::store::Store;
-use qbook::ui::reader;
+use qbook::ui;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut app = App::load(&cli.path, &cli.lang, &cli.variants, Some(Store::open_default()?))?;
+    let store = Store::open_default()?;
+    let mut app = match cli.path {
+        Some(path) => App::load(&path, &cli.lang, &cli.variants, Some(store))?,
+        None => App::shelf(Some(store), &cli.lang)?,
+    };
 
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableMouseCapture)?;
@@ -31,7 +35,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     let (width, height) = crossterm::terminal::size()?;
     app.set_size(width, height);
     loop {
-        terminal.draw(|frame| reader::render(app, frame))?;
+        terminal.draw(|frame| ui::render(app, frame))?;
         if !event::pump(app)? {
             break;
         }

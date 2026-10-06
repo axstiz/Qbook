@@ -7,8 +7,8 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(version, about, name = "qbook")]
 pub struct Cli {
-    /// Путь к книге: epub, txt или md
-    pub path: PathBuf,
+    /// Путь к книге: epub, txt или md. Без пути открывается полка.
+    pub path: Option<PathBuf>,
 
     /// Язык исходного текста (ISO 639-1)
     #[arg(long, default_value = "en")]
