@@ -1,4 +1,4 @@
-use std::io::stdout;
+use std::io::{Write, stdout};
 
 use anyhow::Result;
 use clap::Parser;
@@ -38,6 +38,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
         terminal.draw(|frame| ui::render(app, frame))?;
         if !event::pump(app)? {
             break;
+        }
+        if let Some(text) = app.take_clipboard() {
+            write!(stdout(), "{}", qbook::clip::osc52(&text))?;
+            stdout().flush()?;
         }
     }
     Ok(())

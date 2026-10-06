@@ -43,7 +43,9 @@ fn b_places_a_bookmark_with_a_text_label() {
     app.set_size(40, 10);
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
-    assert_eq!(app.typing_buffer(), Some(""), "b открывает prompt заметки");
+    assert!(app.pick_row().is_some(), "b открывает выбор строки");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.typing_buffer(), Some(""), "Enter открывает prompt заметки");
     app.handle_key(key(KeyCode::Enter));
 
     assert_eq!(app.bookmarks().len(), 1, "закладка в памяти");
@@ -61,6 +63,7 @@ fn typed_note_replaces_the_snippet() {
     app.set_size(40, 10);
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     for c in "Мысль на полях".chars() {
         app.handle_key(key(KeyCode::Char(c)));
     }
@@ -76,6 +79,7 @@ fn notice_fades_after_ticks() {
     app.set_size(40, 10);
     app.handle_key(key(KeyCode::Char('b')));
     app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
     let notice = app.notice().expect("тост после заметки");
     assert!(notice.contains("заметка"), "текст тоста: {notice}");
 
@@ -90,6 +94,7 @@ fn c_cycles_through_the_note_colors_in_the_panel() {
     let (_tmp, path, mut app) = loaded(20);
     app.set_size(40, 10);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Char('B')));
     assert_eq!(app.focus(), qbook::app::ReaderFocus::Bookmarks, "B фокусирует заметки");
@@ -143,8 +148,10 @@ fn panel_walks_the_cursor_and_closes_on_esc() {
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
     app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(app.max_scroll());
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.bookmarks().len(), 2);
 
@@ -169,8 +176,10 @@ fn panel_enter_jumps_to_the_selected_bookmark() {
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
     app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(app.max_scroll());
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Enter));
     app.set_scroll(0);
 
@@ -188,8 +197,10 @@ fn n_and_p_jump_between_bookmarks() {
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
     app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(app.max_scroll());
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Enter));
     app.set_scroll(0);
 
@@ -207,6 +218,7 @@ fn r_renames_the_selected_bookmark() {
     app.set_size(40, 10);
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Char('B')));
     app.handle_key(key(KeyCode::Char('r')));
@@ -228,8 +240,10 @@ fn panel_d_deletes_the_selected_bookmark() {
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
     app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(app.max_scroll());
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.bookmarks().len(), 2);
     let before = store_bookmark_labels(&app, &path);
@@ -250,8 +264,10 @@ fn b_updates_navigation_when_position_changes() {
     app.set_scroll(0);
     app.handle_key(key(KeyCode::Char('b')));
     app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(30);
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.bookmarks().len(), 2);
     let blocks: Vec<usize> = app.bookmarks().iter().map(|b| b.anchor.block).collect();

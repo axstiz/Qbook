@@ -208,8 +208,10 @@ fn app_with_store_and_bookmarks() -> (TempDir, App) {
     let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
     app.handle_key(key(KeyCode::Char('b')));
     app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
     app.set_scroll(app.max_scroll());
     app.handle_key(key(KeyCode::Char('b')));
+    app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Char('B')));
     (tmp, app)
@@ -276,6 +278,7 @@ fn note_marker_tints_the_first_column_of_the_bookmarked_block() {
     let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
     app.handle_key(key(KeyCode::Char('b')));
     app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
 
     let (lines, buffer) = screen(&mut app, 40, 10);
     assert!(lines[1].starts_with("│▎"), "маркер заметки на блоке: {:?}", lines[1]);
@@ -296,6 +299,10 @@ fn note_prompt_renders_its_label() {
     let mut app = App::load(&tmp.path().join("book.md"), "en", &[], Some(store)).expect("загрузка");
     app.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('b'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
         crossterm::event::KeyModifiers::NONE,
     ));
     let (lines, _) = draw(&mut app, 60, 10);

@@ -131,13 +131,25 @@ fn render_text(app: &App, frame: &mut Frame, area: Rect, active: bool) {
 }
 
 fn render_text_lines(app: &App, frame: &mut Frame, area: Rect) {
+    let selection = app.selection_range();
+    let pick_row = app.pick_row();
     let lines: Vec<Line> = app
         .layout()
         .lines()
         .iter()
+        .enumerate()
         .skip(app.scroll())
         .take(area.height as usize)
-        .map(|info| text_line(app, info))
+        .map(|(index, info)| {
+            let mut line = text_line(app, info);
+            if selection.is_some_and(|(top, bottom)| index >= top && index <= bottom) {
+                line.style = Style::new().bg(Color::DarkGray);
+            }
+            if pick_row == Some(index) {
+                line.style = Style::new().add_modifier(Modifier::REVERSED);
+            }
+            line
+        })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -363,6 +375,8 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, width: u16) {
             _ => {}
         }
         Some(Line::from(spans))
+    } else if let Some(hint) = app.pick_hint() {
+        Some(Line::from(Span::styled(hint, Style::new().add_modifier(Modifier::DIM))))
     } else {
         app.notice().map(|notice| Line::from(Span::styled(notice, Style::new().fg(Color::Green))))
     };

@@ -160,6 +160,29 @@ pub struct App {
     /// Тост в статус-баре и остаток его жизни в тиках.
     notice: Option<String>,
     notice_left: u8,
+    /// Курсор над строками текста: выбор строки заметки или выделение.
+    pick: Option<Pick>,
+    /// Последний скопированный фрагмент (для тестов).
+    copied: Option<String>,
+    /// Фрагмент для отправки терминалу через OSC 52 — забирает `main`.
+    clipboard_out: Option<String>,
+}
+
+/// Режим курсора над строками текста.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickKind {
+    /// Выбор строки, к которой прикрепится заметка (только видимая область).
+    Note,
+    /// Визуальное выделение с копированием.
+    Select,
+}
+
+struct Pick {
+    kind: PickKind,
+    /// Курсор, строка раскладки.
+    row: usize,
+    /// Якорь выделения (для `Select`), строка раскладки.
+    base: usize,
 }
 
 impl App {
@@ -265,6 +288,9 @@ impl App {
             focus: ReaderFocus::Text,
             help_open: false,
             col_extra: 0,
+            pick: None,
+            copied: None,
+            clipboard_out: None,
             default_lang: base_lang.to_owned(),
             notice: None,
             notice_left: 0,
@@ -304,6 +330,9 @@ impl App {
             focus: ReaderFocus::Text,
             help_open: false,
             col_extra: 0,
+            pick: None,
+            copied: None,
+            clipboard_out: None,
             default_lang: default_lang.to_owned(),
             notice: None,
             notice_left: 0,
@@ -516,6 +545,8 @@ impl App {
             self.handle_shelf_key(key);
         } else if self.help_open {
             self.handle_help_key(key);
+        } else if self.pick.is_some() {
+            self.handle_pick_key(key);
         } else if self.panel_digit(key) {
             // Цифры 1–4 переключают постоянные btop-колонки из любого фокуса.
         } else {
@@ -550,7 +581,8 @@ impl App {
             }
             KeyCode::Char('5') | KeyCode::Char(':') => self.start_command(),
             KeyCode::Char('h') => self.go_shelf(),
-            KeyCode::Char('b') => self.add_bookmark(),
+            KeyCode::Char('b') => self.start_note_pick(),
+            KeyCode::Char('v') => self.start_select(),
             KeyCode::Char('n') => self.jump_bookmark(true),
             KeyCode::Char('p') => self.jump_bookmark(false),
             KeyCode::Char('?') => self.help_open = true,
@@ -560,9 +592,7 @@ impl App {
         }
     }
 
-    /// Цифры 1–4 (и алиасы `o`, `B`): показать-скрыть колонку и перевести на неё
-    /// фокус. Ещё раз по фокусной колонке — скрыть её.
-    /// Цифры 1–4 делают блок активным (фокус); `Shift+цифра` — показать/скрыть.
+    /// Цифра 1–4 — фокус на блок; Shift+цифра — показать/скрыть.
     /// `o`/`B` — однобуквенные фокус-алиасы глав и заметок.
     fn panel_digit(&mut self, key: KeyEvent) -> bool {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -700,6 +730,144 @@ impl App {
     fn reflow(&mut self) {
         let anchor = self.anchor();
         self.apply_layout(anchor);
+    }
+
+    /// `b`: курсор на строках видимой области — куда прикрепится заметка.
+    fn start_note_pick(&mut self) {
+        if self.book_id.is_none() || self.store.is_none() {
+            return;
+        }
+        let row =
+            self.clamp_to_viewport(anchor_to_scroll(&self.layout, self.document(), self.anchor()));
+        self.pick = Some(Pick { kind: PickKind::Note, row, base: row });
+        self.set_notice(": ↑/↓ строка · Enter — заметка · Esc".to_owned());
+    }
+
+    /// `v`: визуальное выделение от текущей позиции чтения.
+    fn start_select(&mut self) {
+        let row =
+            self.clamp_to_viewport(anchor_to_scroll(&self.layout, self.document(), self.anchor()));
+        self.pick = Some(Pick { kind: PickKind::Select, row, base: row });
+        self.set_notice(": ↑/↓ выделение · Enter/y копировать · Esc".to_owned());
+    }
+
+    fn clamp_to_viewport(&self, row: usize) -> usize {
+        let bottom = self.scroll + self.viewport_height().saturating_sub(1);
+        row.clamp(self.scroll, bottom.min(self.layout.len().saturating_sub(1)))
+    }
+
+    /// Строка курсора pick-режима — для подсветки в рендере.
+    pub fn pick_row(&self) -> Option<usize> {
+        self.pick.as_ref().map(|p| p.row)
+    }
+
+    /// Диапазон выделения (топ..=низ строк раскладки) в режиме `v`.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        match &self.pick {
+            Some(Pick { kind: PickKind::Select, row, base }) => {
+                Some((*row.min(base), *row.max(base)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Подсказка в слоте, пока курсор pick активен.
+    pub fn pick_hint(&self) -> Option<&'static str> {
+        match &self.pick {
+            Some(Pick { kind: PickKind::Note, .. }) => {
+                Some("↑/↓ строка · Enter — заметка · Esc — отмена")
+            }
+            Some(Pick { kind: PickKind::Select, .. }) => {
+                Some("↑/↓ выделение · Enter/y — копировать · Esc — отмена")
+            }
+            None => None,
+        }
+    }
+
+    /// Последний скопированный фрагмент — для тестов.
+    pub fn copied_text(&self) -> Option<&str> {
+        self.copied.as_deref()
+    }
+
+    /// Забрать текст, который надо отправить терминалу (OSC 52).
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard_out.take()
+    }
+
+    fn move_pick(&mut self, delta: isize) {
+        let Some(p) = &self.pick else { return };
+        let kind = p.kind;
+        let last = self.layout.len().saturating_sub(1);
+        let row = (p.row as isize + delta).clamp(0, last as isize) as usize;
+        let row = if kind == PickKind::Note { self.clamp_to_viewport(row) } else { row };
+        let pick = self.pick.as_mut().expect("pick активен");
+        pick.row = row;
+        if kind == PickKind::Select {
+            let vp = self.viewport_height();
+            if row < self.scroll {
+                self.scroll = row;
+            } else if row >= self.scroll + vp {
+                self.scroll = (row + 1).saturating_sub(vp);
+            }
+        }
+    }
+
+    fn handle_pick_key(&mut self, key: KeyEvent) {
+        let kind = self.pick.as_ref().expect("pick активен").kind;
+        match key.code {
+            KeyCode::Esc => self.pick = None,
+            KeyCode::Char('j') | KeyCode::Down => self.move_pick(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_pick(-1),
+            KeyCode::Enter => match kind {
+                PickKind::Note => self.finish_note_pick(),
+                PickKind::Select => self.copy_selection(),
+            },
+            KeyCode::Char('y') if kind == PickKind::Select => self.copy_selection(),
+            // Остальные клавиши гасят курсор и обрабатываются как обычные.
+            _ => {
+                self.pick = None;
+                self.handle_key(key);
+            }
+        }
+    }
+
+    /// Подтвердить строку заметки: открыть ввод метки с якорем этой строки.
+    fn finish_note_pick(&mut self) {
+        let Some(pick) = self.pick.take() else { return };
+        let anchor = scroll_to_anchor(&self.layout, self.document(), pick.row);
+        self.typing = Some(Typing {
+            purpose: InputPurpose::NewBookmark,
+            buffer: String::new(),
+            bookmark_id: None,
+            anchor: Some(anchor),
+            color: DEFAULT_NOTE_COLOR,
+        });
+    }
+
+    /// Скопировать выделенные строки: текст — в системный буфер через OSC 52.
+    fn copy_selection(&mut self) {
+        let Some((a, b)) = self.selection_range() else { return };
+        let doc = self.document();
+        let mut out = String::new();
+        let mut prev_block: Option<usize> = None;
+        for row in a..=b {
+            let Some(info) = self.layout.line(row) else { continue };
+            let Some(block) = doc.block(info.block) else { continue };
+            let text = info.slice(block).trim_end();
+            match prev_block {
+                Some(prev) if prev == info.block && !out.ends_with('\n') => out.push(' '),
+                Some(_) => out.push('\n'),
+                None => {}
+            }
+            out.push_str(text);
+            prev_block = Some(info.block);
+        }
+        let text = out.trim_matches(|c| c == ' ' || c == '\n').to_owned();
+        let rows = b - a + 1;
+        self.copied = Some(text.clone());
+        self.clipboard_out = Some(text);
+        self.pick = None;
+        self.set_notice(format!(": скопировано строк {rows}"));
     }
 
     /// Поставить курсор оглавления на раздел, в котором читаем.
