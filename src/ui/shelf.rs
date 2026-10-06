@@ -1,50 +1,82 @@
-//! Рендер полки: список книг с прогрессом, строка prompt и подсказка.
+//! Рендер полки в btop-стиле: рамка, курсор `►`, мини-прогресс `▓▓░`,
+//! клавиатурный бар в нижней строке.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use crate::app::{App, InputPurpose};
 
-const HINT: &str = "Enter открыть · a добавить · d удалить · q выход";
+const PROGRESS_CELLS: usize = 8;
+
+/// Цветная «клавиша» в баре: жёлтая подпись на тёмном фоне.
+fn key_span<'a>(label: &'a str) -> Span<'a> {
+    Span::styled(label, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+}
+
+/// Пометки между клавишами в баре.
+fn dim<'a>(text: &'a str) -> Span<'a> {
+    Span::styled(text, Style::new().add_modifier(Modifier::DIM))
+}
 
 pub fn render(app: &App, frame: &mut Frame) {
     let area = frame.area();
-    if area.width == 0 || area.height == 0 {
+    if area.width < 4 || area.height < 3 {
         return;
     }
-    let mut lines =
-        vec![Line::from(Span::styled("Полка", Style::new().add_modifier(Modifier::BOLD)))];
-    for (index, book) in app.shelf_books().iter().enumerate() {
-        let selected = index == app.shelf_cursor();
-        let style = if selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
-        let marker = if selected { "> " } else { "  " };
-        lines.push(Line::from(vec![
-            Span::styled(marker, style),
-            Span::styled(book.title.clone(), style),
-            Span::styled(
-                format!(
-                    " · {} · {:.1}% · {}",
-                    book.langs.join(" "),
-                    book.percent,
-                    format_date(book.date)
-                ),
-                style,
-            ),
-        ]));
+    let shelf_area = Rect { height: area.height - 1, ..area };
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: shelf_area.height.saturating_sub(2),
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    if app.shelf_books().is_empty() {
+        lines.push(Line::from(Span::styled(
+            "— пусто: добавьте книгу клавишей a",
+            Style::new().add_modifier(Modifier::DIM),
+        )));
+    } else {
+        for (index, book) in app.shelf_books().iter().enumerate() {
+            lines.push(book_line(book, index == app.shelf_cursor()));
+        }
     }
-    let text_height = area.height.saturating_sub(1);
-    frame.render_widget(
-        Paragraph::new(lines.into_iter().take(text_height as usize).collect::<Vec<_>>()),
-        Rect { height: text_height, ..area },
-    );
-    let footer = footer_line(app);
-    frame.render_widget(
-        Paragraph::new(footer),
-        Rect { x: area.x, y: area.y + text_height, width: area.width, height: 1 },
-    );
+    lines.truncate(inner.height as usize);
+    frame.render_widget(Paragraph::new(lines), inner);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(Line::from(Span::styled(" Полка ", Style::new().add_modifier(Modifier::BOLD))));
+    frame.render_widget(block, shelf_area);
+    let bar = Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 };
+    frame.render_widget(Paragraph::new(footer_line(app)), bar);
+}
+
+fn book_line(book: &crate::app::ShelfBook, selected: bool) -> Line<'static> {
+    let title_style =
+        if selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let marker = if selected {
+        Span::styled("► ", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+    } else {
+        Span::raw("  ")
+    };
+    Line::from(vec![
+        marker,
+        Span::styled(book.title.clone(), title_style),
+        Span::styled(format!(" · {}", book.langs.join(" ")), dim),
+        Span::raw(" "),
+        Span::styled(mini_progress(book.percent), Style::new().fg(Color::Cyan)),
+        Span::styled(format!(" {:5.1}% · {}", book.percent, format_date(book.date)), dim),
+    ])
+}
+
+/// Мини-полоска прогресса `▓▓░░░░░░` из восьми клеток.
+fn mini_progress(percent: f32) -> String {
+    let filled = ((percent.clamp(0.0, 100.0) / 100.0) * PROGRESS_CELLS as f32).round() as usize;
+    format!("{}{}", "▓".repeat(filled), "░".repeat(PROGRESS_CELLS - filled))
 }
 
 fn footer_line(app: &App) -> Line<'static> {
@@ -60,7 +92,16 @@ fn footer_line(app: &App) -> Line<'static> {
     } else if let Some(error) = app.shelf_error() {
         Line::from(Span::styled(format!("⚠ {error}"), Style::new().fg(Color::Yellow)))
     } else {
-        Line::from(Span::styled(HINT, Style::new().add_modifier(Modifier::DIM)))
+        Line::from(vec![
+            key_span("Enter"),
+            dim(" открыть · "),
+            key_span("a"),
+            dim(" добавить · "),
+            key_span("d"),
+            dim(" удалить · "),
+            key_span("q"),
+            dim(" выход"),
+        ])
     }
 }
 
