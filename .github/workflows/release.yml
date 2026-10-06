@@ -1,0 +1,22 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Pack binary
+        run: tar -czf qbook-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz -C target/release qbook
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: qbook-*.tar.gz

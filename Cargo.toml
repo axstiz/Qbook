@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "Terminal reader for EPUB/text with synchronised translation switching"
 license = "MIT"
+repository = "https://github.com/axstiz/Qbook"
 
 [dependencies]
 anyhow = "1"
