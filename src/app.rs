@@ -29,7 +29,7 @@ const COL_MIN: u16 = 20;
 const SCROLL_TAIL: usize = 13;
 /// Ширины постоянных колонок и минимальная ширина центральной рамки — та же
 /// геометрия, что использует рендер `ui::reader`.
-pub const LEFT_W: u16 = 24;
+pub const LEFT_W: u16 = 36;
 pub const RIGHT_W: u16 = 36;
 pub const MIN_CENTER: u16 = 18;
 /// Внешнее поле окна: рамка и колонки отступают от краёв терминала.
@@ -58,6 +58,13 @@ pub enum InputPurpose {
     NewBookmark,
     /// Командная строка ex-команд (клавиша `:` или панель «Команды»).
     Command,
+}
+
+/// Предел ручного изменения колонки (`[`/`]`) — колонка не сдвинулась.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeLimit {
+    Narrow,
+    Wide,
 }
 
 /// Какой блок получает клавиши в трёхколоночной btop-оболочке.
@@ -162,6 +169,8 @@ pub struct App {
     help_open: bool,
     /// Смещение ширины переноса от автоширины (клавиши `[`/`]`).
     col_extra: i16,
+    /// Колонка упёрлась в предел: подсказку показывает статус-бар.
+    resize_limit: Option<ResizeLimit>,
     /// Язык по умолчанию для книг, добавляемых через prompt.
     default_lang: String,
     /// Тост в статус-баре и остаток его жизни в тиках.
@@ -316,6 +325,7 @@ impl App {
             focus: ReaderFocus::Text,
             help_open: false,
             col_extra: 0,
+            resize_limit: None,
             pick: None,
             copied: None,
             clipboard_out: None,
@@ -358,6 +368,7 @@ impl App {
             focus: ReaderFocus::Text,
             help_open: false,
             col_extra: 0,
+            resize_limit: None,
             pick: None,
             copied: None,
             clipboard_out: None,
@@ -445,14 +456,32 @@ impl App {
         }
     }
 
-    /// Ширина переноса: текст занимает всю внутреннюю ширину рамки минус
-    /// скроллбар и максимальный отступ префиксов; `[`/`]` подстраивают вручную.
+    /// Ширина переноса: авто = внутренняя ширина рамки минус поля; `[`/`]`
+    /// двигают колонку вокруг авто в пределах `column_limits`. Возвращает ширину
+    /// строки текста, а не рамки — справа остаётся пустое место.
     pub fn wrap_width(&self) -> u16 {
+        let (low, high) = self.column_limits();
+        let base = self.column_base();
+        (base + i64::from(self.col_extra)).clamp(i64::from(low), i64::from(high)) as u16
+    }
+
+    /// Диапазон ширины переноса при текущем окне: от минимальной колонки
+    /// до ширины, у которой остаётся один столбец на скроллбар.
+    fn column_limits(&self) -> (u16, u16) {
         let inner = self.center_width().saturating_sub(2).saturating_sub(2 * TEXT_INDENT);
-        let max_wrap = inner.saturating_sub(1);
-        let low = COL_MIN.min(max_wrap);
-        let target = inner.saturating_sub(TEXT_PAD).saturating_add_signed(self.col_extra);
-        target.clamp(low, max_wrap)
+        let high = inner.saturating_sub(1);
+        (COL_MIN.min(high), high)
+    }
+
+    /// Автоширина переноса — база, вокруг которой ходят `[`/`]`.
+    fn column_base(&self) -> i64 {
+        i64::from(self.center_width().saturating_sub(2).saturating_sub(2 * TEXT_INDENT))
+            - i64::from(TEXT_PAD)
+    }
+
+    /// В какой предел упёрлась ручная колонка — подсказку рисует статус-бар.
+    pub fn column_limit(&self) -> Option<ResizeLimit> {
+        self.resize_limit
     }
 
     /// Закладка на текущей строке — её метку показывает статус-бар. Метка
@@ -538,6 +567,7 @@ impl App {
         let anchor = self.pending_anchor.take().unwrap_or_else(|| self.anchor());
         self.width = width;
         self.height = height;
+        self.resize_limit = None;
         self.apply_layout(anchor);
     }
 
@@ -548,9 +578,19 @@ impl App {
     }
 
     /// Клавиши `[`/`]`: уже/шире колонку с сохранением позиции чтения.
-    /// `col_extra` уходит в минус (уже автоширины) и ограничен разумным.
+    /// У предела колонка не двигается и не перестраивается — статус-бар
+    /// получает подсказку `resize_limit`.
     fn resize_column(&mut self, delta: i16) {
-        self.col_extra = (self.col_extra + delta).clamp(-40, 40);
+        let (low, high) = self.column_limits();
+        let next = (i64::from(self.wrap_width()) + i64::from(delta))
+            .clamp(i64::from(low), i64::from(high));
+        if next == i64::from(self.wrap_width()) {
+            self.resize_limit =
+                Some(if delta > 0 { ResizeLimit::Wide } else { ResizeLimit::Narrow });
+            return;
+        }
+        self.col_extra = (next - self.column_base()) as i16;
+        self.resize_limit = None;
         let anchor = self.anchor();
         self.apply_layout(anchor);
     }

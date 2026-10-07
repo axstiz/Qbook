@@ -3,8 +3,10 @@ use qbook::ui::reader;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier};
 use tempfile::TempDir;
+
+use crossterm::event::{KeyCode, KeyModifiers};
 
 fn dir() -> TempDir {
     tempfile::tempdir().expect("каталог")
@@ -38,13 +40,16 @@ fn title_line_shows_position_percent_and_quality() {
     app.set_size(120, 10);
     app.set_scroll(25);
     let (lines, _) = screen(&mut app, 120, 10);
-    let title = &lines[1];
+    let title = &lines[0];
     assert!(title.contains("book"), "заголовок: {title}");
-    assert!(title.contains('%'), "процент: {title}");
+    assert!(!title.contains('%'), "процент уехал из шапки в рамку текста: {title}");
     assert!(title.contains('/'), "позиция: {title}");
     assert!(title.contains("60"), "всего блоков: {title}");
     assert!(!title.contains('⚠'), "качество базы не нуждается в бейдже: {title}");
-    assert!(title.contains('1'), "цифра панели в заголовке: {title}");
+    let frame = &lines[2];
+    assert!(frame.contains('1'), "цифра панели на рамке текста: {frame}");
+    assert!(frame.contains('%'), "процент в заголовке текста: {frame}");
+    assert!(frame.contains("en"), "язык в заголовке текста: {frame}");
 
     let bar = lines.last().expect("строки есть");
     assert!(bar.contains("1–4 — блоки"), "подсказка переключения в баре: {bar}");
@@ -53,7 +58,8 @@ fn title_line_shows_position_percent_and_quality() {
     let bar = lines.last().expect("строки есть");
     assert!(bar.contains("выход"), "полный бар на широком терминале: {bar}");
     assert!(bar.contains("t язык"), "бар про язык: {bar}");
-    assert!(bar.contains("h полка"), "бар про полку: {bar}");
+    assert!(bar.contains("s полка"), "бар про полку: {bar}");
+    assert!(bar.contains("h справка"), "бар про справку: {bar}");
     assert!(bar.contains("b заметка"), "динамическая подсказка текста: {bar}");
     let toc = lines.iter().find(|line| line.contains(" Главы ")).expect("панель глав есть");
     assert!(toc.contains("╭2"), "цифра 2 на рамке глав: {toc}");
@@ -70,21 +76,22 @@ fn blank_inside_line(line: &str) -> bool {
 #[test]
 fn headings_quotes_and_paragraphs_are_decorated() {
     let mut app = app_of("# Глава\n\n> первая строка цитаты\nвторая строка\n\nобычный абзац");
-    app.set_size(40, 10);
-    let (lines, buffer) = screen(&mut app, 40, 10);
+    app.set_size(40, 11);
+    let (lines, buffer) = screen(&mut app, 40, 11);
 
-    // Строка 1 — верхняя граница рамки (поле сверху), текст в строках 2+.
-    assert!(lines[1].contains('╭'), "рамка со скруглённым углом: {:?}", lines[1]);
-    assert!(lines[2].contains("Глава"), "заголовок без решёток: {:?}", lines[2]);
+    // Строка 0 — шапка книги, строка 1 — поле сверху, строка 2 — верхняя
+    // граница рамки, текст в строках 3+.
+    assert!(lines[2].contains('╭'), "рамка со скруглённым углом: {:?}", lines[2]);
+    assert!(lines[3].contains("Глава"), "заголовок без решёток: {:?}", lines[3]);
     let heading_bold =
-        (0..40u16).any(|x| buffer[(x, 2)].style().add_modifier.contains(Modifier::BOLD));
+        (0..40u16).any(|x| buffer[(x, 3)].style().add_modifier.contains(Modifier::BOLD));
     assert!(heading_bold, "заголовок жирный");
 
-    assert!(blank_inside_line(&lines[3]), "отступ после заголовка: {:?}", lines[3]);
-    assert!(lines[4].contains("▌ первая строка цитаты"), "маркер цитаты: {:?}", lines[4]);
-    assert!(lines[5].contains("вторая строка"), "отступ продолжения цитаты: {:?}", lines[5]);
-    assert!(blank_inside_frame(&lines[8]), "слот над баром пуст: {:?}", lines[8]);
-    assert!(lines[9].contains("1–4 — блоки"), "бар внизу: {:?}", lines[9]);
+    assert!(blank_inside_line(&lines[4]), "отступ после заголовка: {:?}", lines[4]);
+    assert!(lines[5].contains("▌ первая строка цитаты"), "маркер цитаты: {:?}", lines[5]);
+    assert!(lines[6].contains("вторая строка"), "отступ продолжения цитаты: {:?}", lines[6]);
+    assert!(blank_inside_frame(&lines[9]), "слот над баром пуст: {:?}", lines[9]);
+    assert!(lines[10].contains("1–4 — блоки"), "бар внизу: {:?}", lines[10]);
 }
 
 #[test]
@@ -92,9 +99,9 @@ fn paragraphs_are_separated_by_a_blank_line_on_screen() {
     let mut app = app_of("первый абзац\n\nвторой абзац");
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
-    assert_eq!(lines[2].trim_matches(|c: char| c == '│' || c == ' '), "первый абзац");
-    assert!(blank_inside_line(&lines[3]), "между абзацами пустая строка: {:?}", lines[3]);
-    assert_eq!(lines[4].trim_matches(|c: char| c == '│' || c == ' '), "второй абзац");
+    assert_eq!(lines[3].trim_matches(|c: char| c == '│' || c == ' '), "первый абзац");
+    assert!(blank_inside_line(&lines[4]), "между абзацами пустая строка: {:?}", lines[4]);
+    assert_eq!(lines[5].trim_matches(|c: char| c == '│' || c == ' '), "второй абзац");
 }
 
 #[test]
@@ -102,9 +109,9 @@ fn long_documents_get_a_scrollbar() {
     let mut app = app_of(&paragraphs(60));
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
-    // Скроллбар живёт в правом столбце внутренней области рамки: рамка со
-    // смещённого на поле края, внутри текст индентен — столбец 36.
-    let column: String = lines.iter().map(|l| l.chars().nth(36).unwrap_or(' ')).collect();
+    // Скроллбар прижат к правой границе колонки текста: рамка со смещённого на
+    // поле края, текст индентен — колонка шириной 31 начинается в столбце 3.
+    let column: String = lines.iter().map(|l| l.chars().nth(33).unwrap_or(' ')).collect();
     assert!(column.contains('█'), "скроллбар есть: {column:?}");
 }
 
@@ -113,7 +120,7 @@ fn short_documents_have_no_scrollbar() {
     let mut app = app_of(&paragraphs(3));
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
-    let column: String = lines.iter().map(|l| l.chars().nth(36).unwrap_or(' ')).collect();
+    let column: String = lines.iter().map(|l| l.chars().nth(33).unwrap_or(' ')).collect();
     assert!(!column.contains('█'), "скроллбара нет: {column:?}");
 }
 
@@ -135,7 +142,7 @@ fn low_alignment_quality_is_badged() {
     assert!(app.switch_lang(1));
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
-    let title = &lines[1];
+    let title = &lines[0];
     assert!(title.contains('⚠'), "бейдж качества в заголовке: {title}");
 }
 
@@ -150,9 +157,9 @@ fn good_alignment_has_no_badge() {
     assert!(app.switch_lang(1));
     app.set_size(40, 10);
     let (lines, _) = screen(&mut app, 40, 10);
-    let title = &lines[1];
+    let title = &lines[0];
     assert!(!title.contains('⚠'), "качество в норме: {title}");
-    assert!(title.contains("ru"), "текущий язык в заголовке: {title}");
+    assert!(lines[2].contains("ru"), "текущий язык в заголовке текста: {}", lines[2]);
 }
 
 #[test]
@@ -266,7 +273,7 @@ fn title_highlights_the_bookmark_label() {
     let (_tmp, mut app) = app_with_store_and_bookmarks();
     app.set_scroll(0);
     let (lines, _) = draw(&mut app, 120, 8);
-    let title = &lines[1];
+    let title = &lines[0];
     assert!(title.contains("Абзац номер 0"), "метка закладки в заголовке: {title}");
 }
 
@@ -275,7 +282,7 @@ fn title_hides_the_bookmark_label_once_the_line_is_scrolled() {
     let (_tmp, mut app) = app_with_store_and_bookmarks();
     app.set_scroll(2);
     let (lines, _) = draw(&mut app, 120, 8);
-    let title = &lines[1];
+    let title = &lines[0];
     assert!(
         !title.contains("Абзац номер 0"),
         "метка привязана к строке закладки, а не к блоку: {title}"
@@ -297,12 +304,12 @@ fn note_marker_tints_only_the_anchored_line_of_the_block() {
     app.handle_key(key(KeyCode::Enter));
 
     let (lines, buffer) = screen(&mut app, 40, 10);
-    assert!(lines[2].contains("▎"), "маркер заметки на якорной строке: {:?}", lines[2]);
+    assert!(lines[3].contains("▎"), "маркер заметки на якорной строке: {:?}", lines[3]);
     assert_eq!(
-        buffer[(3, 2)].style().fg,
+        buffer[(3, 3)].style().fg,
         Some(qbook::ui::note_color(5)),
         "маркер цвета заметки: {:?}",
-        buffer[(3, 2)].style()
+        buffer[(3, 3)].style()
     );
     let markers = lines.iter().map(|l| l.chars().filter(|&c| c == '▎').count()).sum::<usize>();
     assert_eq!(markers, 1, "маркер только на якорной строке: {lines:?}");
@@ -353,9 +360,9 @@ fn panel_digits_highlight_the_active_block() {
         Some(ratatui::style::Color::Yellow),
         "неактивная панель оранжевая"
     );
-    let text_col = text_digit(&lines[1]);
+    let text_col = text_digit(&lines[2]);
     assert_eq!(
-        fg(&buffer, text_col, 1),
+        fg(&buffer, text_col, 2),
         Some(ratatui::style::Color::White),
         "активная цифра белая"
     );
@@ -371,9 +378,9 @@ fn panel_digits_highlight_the_active_block() {
         Some(ratatui::style::Color::White),
         "активная панель белая"
     );
-    let text_col = text_digit(&lines[1]);
+    let text_col = text_digit(&lines[2]);
     assert_eq!(
-        fg(&buffer, text_col, 1),
+        fg(&buffer, text_col, 2),
         Some(ratatui::style::Color::Yellow),
         "неактивный текст оранжевый"
     );
@@ -399,6 +406,74 @@ fn wide_window_shows_columns_and_highlights_the_active_heading() {
 }
 
 #[test]
+fn inactive_headings_gray_out_when_the_toc_is_not_focused() {
+    let mut app = app_of("# Раздел 1\n\nпервый абзац\n\n# Раздел 2\n\nвторой абзац");
+    app.set_size(96, 12);
+    let title_x = |line: &str| line.find('Р').expect("заголовок") as u16;
+
+    let (lines, buffer) = screen(&mut app, 96, 12);
+    let row_1 = lines.iter().position(|l| l.contains("Раздел 1")).expect("Раздел 1");
+    let row_2 = lines.iter().position(|l| l.contains("Раздел 2")).expect("Раздел 2");
+    assert_eq!(
+        buffer[(title_x(&lines[row_1]), row_1 as u16)].style().fg,
+        Some(Color::Cyan),
+        "активная глава синяя: {}",
+        lines[row_1]
+    );
+    assert_eq!(
+        buffer[(title_x(&lines[row_2]), row_2 as u16)].style().fg,
+        Some(Color::DarkGray),
+        "неактивная глава серая: {}",
+        lines[row_2]
+    );
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('2'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let (lines, buffer) = screen(&mut app, 96, 12);
+    let row_2 = lines.iter().position(|l| l.contains("Раздел 2")).expect("Раздел 2");
+    assert_ne!(
+        buffer[(title_x(&lines[row_2]), row_2 as u16)].style().fg,
+        Some(Color::DarkGray),
+        "при фокусе на главах неактивные белые: {}",
+        lines[row_2]
+    );
+}
+
+#[test]
+fn inactive_bookmarks_gray_out_when_the_panel_is_not_focused() {
+    let (_tmp, mut app) = app_with_store_and_bookmarks();
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('1'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('4'),
+        crossterm::event::KeyModifiers::SHIFT,
+    ));
+    let (lines, buffer) = draw(&mut app, 96, 14);
+    let rows: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.contains('●') && l.contains("Абзац"))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(rows.len() >= 2, "видно не меньше двух закладок: {rows:?}");
+    let label_col = |line: &str| -> u16 {
+        let dot = line.chars().position(|c| c == '●').expect("точка панели") as u16;
+        dot + 2
+    };
+    let gray = rows
+        .iter()
+        .filter(|&&y| buffer[(label_col(&lines[y]), y as u16)].style().fg == Some(Color::DarkGray))
+        .count();
+    let white = rows.len() - gray;
+    assert!(gray >= rows.len() - 1, "невыбранные закладки серые: {gray}");
+    assert_eq!(white, 1, "выбранная закладка белая: {white}");
+}
+
+#[test]
 fn toc_overlay_lists_headings_above_the_slot() {
     let mut app = app_of(
         "# Раздел 1\n\nпервый абзац\n\n## Раздел 2\n\nвторой абзац\n\n# Раздел 3\n\nтретий абзац",
@@ -414,8 +489,7 @@ fn toc_overlay_lists_headings_above_the_slot() {
     assert!(all.contains("Раздел 1"), "первый пункт: {all}");
     assert!(all.contains("Раздел 2"), "второй пункт: {all}");
     assert!(all.contains("Раздел 3"), "третий пункт: {all}");
-    let title = &lines[1];
-    assert!(title.contains('%'), "метрики не перекрыты: {title}");
+    assert!(lines[2].contains('%'), "метрики текста не перекрыты: {}", lines[2]);
 }
 
 #[test]
@@ -430,8 +504,63 @@ fn help_overlay_shows_bindings_and_keeps_status_visible() {
     let all = lines.join("\n");
     assert!(all.contains("Справка"), "заголовок справки: {all}");
     assert!(all.contains("оглавление"), "строка об оглавлении: {all}");
-    let title = &lines[1];
-    assert!(title.contains('%'), "метрики не перекрыты: {title}");
+    let title = &lines[0];
+    assert!(title.contains("book"), "шапка не перекрыта: {title}");
+    let help_row = lines.iter().position(|l| l.contains(" Справка ")).expect("рамка справки");
+    assert_eq!(help_row, 3, "справка по центру окна, а не у нижней границы");
+}
+
+#[test]
+fn help_modal_dims_everything_but_itself() {
+    let mut app = app_of("# Абзац номер 0\n\nпервый абзац\n\n# Абзац номер 1\n\nвторой абзац");
+    app.set_size(100, 14);
+
+    let (lines, buffer) = screen(&mut app, 100, 14);
+    let text_row = lines.iter().position(|l| l.contains('А')).expect("текст");
+    let a_col =
+        (0..100u16).find(|&x| buffer[(x, text_row as u16)].symbol() == "А").expect("символ");
+    assert!(
+        !buffer[(a_col, text_row as u16)].style().add_modifier.contains(Modifier::DIM),
+        "без справки текст не приглушён"
+    );
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('h'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let (lines, buffer) = screen(&mut app, 100, 14);
+    let text_row = lines.iter().position(|l| l.contains('А')).expect("текст");
+    let a_col =
+        (0..100u16).find(|&x| buffer[(x, text_row as u16)].symbol() == "А").expect("символ");
+    assert!(a_col < 37, "это колонка «Главы», справка её не накрывает: x={a_col}");
+    let text_style = buffer[(a_col, text_row as u16)].style();
+    assert_eq!(text_style.fg, Some(Color::DarkGray), "текст под справкой тёмно-серый");
+    assert!(text_style.add_modifier.contains(Modifier::DIM), "текст под справкой приглушён");
+    let left_fg = buffer[(1, 3)].style().fg;
+    assert_eq!(left_fg, Some(Color::DarkGray), "левая колонка тоже темнеет: {left_fg:?}");
+
+    let help_row = lines.iter().position(|l| l.contains(" Справка ")).expect("справка");
+    let gum_col =
+        (0..100u16).find(|&x| buffer[(x, help_row as u16)].symbol() == "С").expect("титул справки");
+    assert!(gum_col >= 37, "титул внутри центральной колонки: x={gum_col}");
+    let help_style = buffer[(gum_col, help_row as u16)].style();
+    assert_ne!(help_style.fg, Some(Color::DarkGray), "рамка справки остаётся яркой");
+    assert!(!help_style.add_modifier.contains(Modifier::DIM), "справка не приглушена");
+
+    let help_left = gum_col.saturating_sub(2);
+    let bleed = (help_row..help_row + 9.min(14 - help_row))
+        .any(|y| (help_left..help_left + 28).any(|x| buffer[(x, y as u16)].symbol() == "А"));
+    assert!(!bleed, "внутри справки не просвечивает «А» из текста");
+}
+
+#[test]
+fn text_title_grows_the_progress_bar_to_three_times() {
+    let mut app = app_of(&paragraphs(60));
+    app.set_size(120, 10);
+    let (lines, _) = screen(&mut app, 120, 10);
+    let frame = &lines[2];
+    let gauge = |l: &str| l.chars().filter(|&c| c == '▯' || c == '▮').count();
+    assert!(gauge(frame) >= 24, "бар занимает 24 ячейки: {}", gauge(frame));
 }
 
 #[test]
@@ -489,12 +618,12 @@ fn commands_block_hides_itself_but_bookmarks_stay() {
 #[test]
 fn focused_commands_do_not_eat_the_bookmarks() {
     let mut app = app_of(&paragraphs(5));
-    app.set_size(96, 10);
+    app.set_size(96, 11);
     app.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('4'),
         crossterm::event::KeyModifiers::NONE,
     ));
-    let (lines, _) = screen(&mut app, 96, 10);
+    let (lines, _) = screen(&mut app, 96, 11);
     let all = lines.join("\n");
     assert!(all.contains(":open"), "команды в фокусе видны: {all}");
     assert!(all.contains("Заметки"), "заметки остались: {all}");
@@ -568,7 +697,7 @@ fn many_headings_scroll_inside_the_toc_panel() {
 fn hidden_bookmarks_leave_commands_alone_in_right_column() {
     let mut app = app_of(&paragraphs(5));
     app.set_size(84, 14);
-    let (lines, _) = screen(&mut app, 84, 14);
+    let (lines, _) = screen(&mut app, 96, 14);
     let joined = lines.join("\n");
     assert!(joined.contains(" Заметки "), "заметки видимы: {joined}");
     assert!(joined.contains(" Команды "), "команды видимы: {joined}");
@@ -578,7 +707,7 @@ fn hidden_bookmarks_leave_commands_alone_in_right_column() {
         crossterm::event::KeyModifiers::SHIFT,
     );
     app.handle_key(shift3);
-    let (lines, _) = screen(&mut app, 84, 14);
+    let (lines, _) = screen(&mut app, 96, 14);
     let joined = lines.join("\n");
     assert!(!joined.contains("3 Заметки "), "заметки скрыты: {joined}");
     assert!(joined.contains(" Команды "), "команды остались: {joined}");
@@ -599,4 +728,87 @@ fn text_fades_towards_the_bottom_edge() {
     let mid = (0..40u16)
         .any(|x| buffer[(x, bottom_text_row - 3)].style().add_modifier.contains(Modifier::DIM));
     assert!(!mid, "выше зоны градиента текст яркий");
+}
+
+/// Правый край рамки (столбцы 68..72, строки 3..9) пуст — от сужения колонки.
+fn right_margin_empty(buffer: &Buffer) -> bool {
+    (68..=72).all(|x| (3..9).all(|y| buffer[(x, y)].symbol() == " "))
+}
+
+#[test]
+fn manual_narrowing_moves_the_text_and_leaves_space_on_the_right() {
+    let long = "По вечернему городу гуляет очень длинный абзац, ".repeat(6);
+    let body = (0..30).map(|i| format!("{long} {i}")).collect::<Vec<_>>().join("\n\n");
+    let mut app = app_of(&body);
+    app.set_size(80, 14);
+    let (_, buffer) = screen(&mut app, 80, 14);
+    assert!(!right_margin_empty(&buffer), "по автоширине текст занимает правую часть");
+
+    let key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    app.handle_key(key('['));
+    app.handle_key(key('['));
+    let (_, buffer) = screen(&mut app, 80, 14);
+    assert!(right_margin_empty(&buffer), "после [ справа от текста — пустое место");
+}
+
+#[test]
+fn column_limit_shows_a_hint_in_the_bar() {
+    let mut app = app_of(&paragraphs(30));
+    app.set_size(120, 14);
+    let key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    for _ in 0..50 {
+        app.handle_key(key(']'));
+    }
+    let (lines, _) = screen(&mut app, 120, 14);
+    let bar = lines.last().expect("бар есть");
+    assert!(bar.contains("шире некуда"), "подсказка предела в баре: {bar}");
+
+    app.handle_key(key('['));
+    let (lines, _) = screen(&mut app, 120, 14);
+    let bar = lines.last().expect("бар есть");
+    assert!(!bar.contains("предел"), "успешное сужение снимает подсказку: {bar}");
+}
+
+#[test]
+fn bold_and_italic_markdown_are_styled_in_the_text() {
+    let mut app = app_of("Обычный **жирный** и *курсивный* текст");
+    app.set_size(80, 14);
+    app.set_scroll(0);
+    let (_lines, buffer) = screen(&mut app, 80, 14);
+    // Заголовка нет, цитат нет — первая строка текста в третьей строке экрана,
+    // текст начинается с внутреннего поля рамки (столбец 40).
+    let y = 3u16;
+    let first_row: String = (40..64).map(|x| buffer[(x, y)].symbol()).collect();
+    for x in 40..64 {
+        let symbol = buffer[(x, y)].symbol();
+        assert_ne!(symbol, "*", "звёздочка-маркер не рендерится в {x}: {first_row:?}");
+        assert_ne!(symbol, "_", "подчёркивание-маркер не рендерится в {x}: {first_row:?}");
+    }
+    // `**жирный**` начинается после 8 символов.
+    let bold = buffer[(48, y)].style();
+    assert!(
+        bold.add_modifier.contains(Modifier::BOLD),
+        "жирный выделен жирным: {bold:?} строка {first_row:?}"
+    );
+    assert!(!bold.add_modifier.contains(Modifier::ITALIC), "жирный не курсив");
+    // `*курсивный*` начинается после «жирный и ».
+    let italic = buffer[(57, y)].style();
+    assert!(
+        italic.add_modifier.contains(Modifier::ITALIC),
+        "курсивный выделен курсивом: {italic:?} строка {first_row:?}"
+    );
+    assert!(!italic.add_modifier.contains(Modifier::BOLD), "курсив не жирный");
+}
+
+#[test]
+fn rule_renders_as_a_full_width_dividing_line() {
+    let mut app = app_of("До разделителя\n\n---\n\nПосле разделителя");
+    app.set_size(80, 14);
+    let (_, buffer) = screen(&mut app, 80, 14);
+    let rule_row = (3..9).find(|&y| buffer[(40, y)].symbol() == "─").expect("линия разделителя");
+    assert_eq!(buffer[(76, rule_row)].symbol(), "─", "линия тянется до края рамки");
+    assert_eq!(buffer[(40, rule_row - 1)].symbol(), " ", "перед линией — отступ абзаца");
+    let below = buffer[(40, rule_row + 1)].symbol();
+    assert_ne!(below, "─", "под линией начинается текст, а не вторая линия");
+    assert_ne!(below, " ", "под линией нет пустой строки");
 }

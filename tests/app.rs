@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use qbook::app::{App, InputPurpose};
+use qbook::app::{App, InputPurpose, ResizeLimit};
 use qbook::store::Store;
 use tempfile::TempDir;
 
@@ -203,7 +203,7 @@ fn wrap_width_matches_the_column_layout_across_sizes() {
         let mut app = load(&base, None);
         app.set_size(width, 20);
         assert!(
-            app.wrap_width() >= 20,
+            app.wrap_width() >= 15,
             "перенос не обжимается у левого края при ширине {width}: {}",
             app.wrap_width()
         );
@@ -560,17 +560,18 @@ fn text_wraps_to_the_current_column_width() {
     write(&base, &body);
 
     let mut app = load(&base, None);
-    app.set_size(60, 10);
+    app.set_size(80, 10);
     let shift = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
-    // 60 − поле 1·2 − левая 24 − борта 2 − индент 2 − запас 5 = 24.
-    assert_eq!(app.layout().width(), 24, "перенос по фактической ширине центра");
+    // 80 − поле 1·2 = 78 рамки; левая 36 видна, правая не влезает →
+    // центр 78−36−1 = 41; на внутренних 37 отбрасываем 5 запаса = 32.
+    assert_eq!(app.layout().width(), 32, "перенос по фактической ширине центра");
 
     app.handle_key(shift('4'));
     app.handle_key(shift('3'));
-    assert_eq!(app.layout().width(), 24, "левая колонка ещё стоит");
+    assert_eq!(app.layout().width(), 32, "левая колонка ещё стоит");
 
     app.handle_key(shift('2'));
-    assert_eq!(app.layout().width(), 49, "без колонок текст на 60−2−2−2−5");
+    assert_eq!(app.layout().width(), 69, "без колонок текст на 80−2−2−2−5");
 }
 
 #[test]
@@ -662,7 +663,7 @@ fn brackets_widen_and_narrow_the_column_keeping_the_block() {
     write(&base, &body);
 
     let mut app = load(&base, None);
-    app.set_size(60, 10);
+    app.set_size(80, 10);
     app.set_scroll(15);
     let before = app.anchor();
     let width = app.layout().width();
@@ -680,6 +681,65 @@ fn brackets_widen_and_narrow_the_column_keeping_the_block() {
     }
     assert!(app.layout().width() >= 20, "узкая колонка не уже 20: {}", app.layout().width());
     assert_eq!(app.anchor().block, before.block, "позиция не прыгнула при клампе");
+}
+
+#[test]
+fn column_resize_hits_limits_and_reports_them() {
+    let tmp = dir();
+    let base = tmp.path().join("book.md");
+    let long = "Очень длинный абзац про прогулку по вечернему городу, ".repeat(6);
+    let body = (0..12).map(|i| format!("{long}{i}")).collect::<Vec<_>>().join("\n\n");
+    write(&base, &body);
+
+    let mut app = load(&base, None);
+    app.set_size(80, 10);
+
+    let mut width = app.layout().width();
+    for _ in 0..40 {
+        app.handle_key(key(KeyCode::Char(']')));
+        let next = app.layout().width();
+        if next <= width {
+            break;
+        }
+        width = next;
+    }
+    assert_eq!(app.layout().width(), width, "] дошёл до предела");
+    assert_eq!(
+        app.column_limit(),
+        Some(ResizeLimit::Wide),
+        "предел сужения-вширь: {:?}",
+        app.column_limit()
+    );
+
+    app.handle_key(key(KeyCode::Char('[')));
+    assert_eq!(app.column_limit(), None, "успешное сужение снимает подсказку");
+    assert!(app.layout().width() < width, "[: колонка уже предела");
+
+    let mut width = app.layout().width();
+    for _ in 0..40 {
+        app.handle_key(key(KeyCode::Char('[')));
+        let next = app.layout().width();
+        if next >= width {
+            break;
+        }
+        width = next;
+    }
+    assert!(app.layout().width() >= 20, "узкая колонка держит минимум: {}", app.layout().width());
+    assert_eq!(
+        app.column_limit(),
+        Some(ResizeLimit::Narrow),
+        "минимум колонки: {:?}",
+        app.column_limit()
+    );
+
+    app.set_size(80, 10);
+    assert_eq!(app.column_limit(), None, "смена размера снимает подсказку");
+    assert_eq!(
+        app.layout().width(),
+        20,
+        "ручная колонка переживает ресайз: {}",
+        app.layout().width()
+    );
 }
 
 #[test]
@@ -763,7 +823,7 @@ fn bracket_keys_narrow_and_widen_the_text() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 4);
     let mut app = load(&base, None);
-    app.set_size(60, 12);
+    app.set_size(90, 12);
     let auto = app.layout().width();
 
     app.handle_key(key(KeyCode::Char('[')));
