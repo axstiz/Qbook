@@ -468,6 +468,27 @@ fn focused_commands_do_not_eat_the_bookmarks() {
 }
 
 #[test]
+fn hidden_bookmarks_leave_commands_alone_in_right_column() {
+    let mut app = app_of(&paragraphs(5));
+    app.set_size(80, 14);
+    let (lines, _) = screen(&mut app, 80, 14);
+    let joined = lines.join("\n");
+    assert!(joined.contains(" Заметки "), "заметки видимы: {joined}");
+    assert!(joined.contains(" Команды "), "команды видимы: {joined}");
+
+    let shift3 = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('3'),
+        crossterm::event::KeyModifiers::SHIFT,
+    );
+    app.handle_key(shift3);
+    let (lines, _) = screen(&mut app, 80, 14);
+    let joined = lines.join("\n");
+    assert!(!joined.contains(" Заметки "), "заметки скрыты: {joined}");
+    assert!(joined.contains(" Команды "), "команды остались: {joined}");
+    assert!(joined.contains(":open"), "команды занимают колонку: {joined}");
+}
+
+#[test]
 fn text_fades_towards_the_bottom_edge() {
     let mut app = app_of(&paragraphs(10));
     app.set_size(40, 10);

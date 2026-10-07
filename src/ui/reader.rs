@@ -330,29 +330,38 @@ fn render_toc(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     frame.render_widget(block_frame(" Главы ", active), area);
 }
 
-/// Правая колонка: снизу список команд, над ним заметки. Когда места мало,
-/// блок команд прячется сам — заметки остаются (минимум BOOKMARKS_MIN строк);
-/// даже в фокусе команд он не съедает колонку целиком.
+/// Правая колонка: список команд и заметок. Когда видны оба блока, команды
+/// снизу, над ними заметки; при нехватке места команды прячутся сами
+/// (минимум BOOKMARKS_MIN строк заметок) и даже в фокусе не съедают колонку.
+/// Если какой-то блок скрыт — другой занимает колонку целиком.
 fn render_right(app: &App, frame: &mut Frame, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let mut above = area;
     let focused = app.focus() == ReaderFocus::Commands;
-    if app.commands_visible() && (focused || above.height >= BOOKMARKS_MIN + 3) {
-        let limit = above.height.saturating_sub(BOOKMARKS_MIN).max(3);
-        let cmds_height = (COMMANDS.len().min(COMMANDS_MAX_ROWS) as u16 + 2).min(limit);
-        let cmds_area = Rect {
-            x: area.x,
-            y: above.y + above.height - cmds_height,
-            width: area.width,
-            height: cmds_height,
-        };
-        render_commands(app, frame, cmds_area, focused);
-        above.height -= cmds_height;
-    }
-    if above.height > 0 {
-        render_bookmarks(app, frame, above, app.focus() == ReaderFocus::Bookmarks);
+    let show_bookmarks = app.bookmarks_visible();
+    let show_commands = app.commands_visible();
+
+    if show_commands && show_bookmarks {
+        if focused || area.height >= BOOKMARKS_MIN + 3 {
+            let limit = area.height.saturating_sub(BOOKMARKS_MIN).max(3);
+            let cmds_height = (COMMANDS.len().min(COMMANDS_MAX_ROWS) as u16 + 2).min(limit);
+            let cmds_area = Rect {
+                x: area.x,
+                y: area.y + area.height - cmds_height,
+                width: area.width,
+                height: cmds_height,
+            };
+            render_commands(app, frame, cmds_area, focused);
+            let above = Rect { y: area.y, height: area.height - cmds_height, ..area };
+            render_bookmarks(app, frame, above, app.focus() == ReaderFocus::Bookmarks);
+        } else {
+            render_bookmarks(app, frame, area, app.focus() == ReaderFocus::Bookmarks);
+        }
+    } else if show_commands {
+        render_commands(app, frame, area, focused);
+    } else if show_bookmarks {
+        render_bookmarks(app, frame, area, app.focus() == ReaderFocus::Bookmarks);
     }
 }
 

@@ -603,6 +603,33 @@ fn resize_keeps_the_block_in_view() {
 }
 
 #[test]
+fn shift3_toggles_only_bookmarks_shift4_only_commands() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 4);
+    let mut app = load(&base, None);
+    app.set_size(60, 12);
+    let shift = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+
+    assert!(app.bookmarks_visible());
+    assert!(app.commands_visible());
+
+    app.handle_key(shift('3'));
+    assert!(!app.bookmarks_visible(), "Shift+3 скрывает заметки");
+    assert!(app.commands_visible(), "команды остаются показаны");
+
+    app.handle_key(shift('3'));
+    assert!(app.bookmarks_visible(), "Shift+3 возвращает заметки");
+    assert!(app.commands_visible(), "команды не тронуты");
+
+    app.handle_key(shift('4'));
+    assert!(app.bookmarks_visible(), "заметки не тронуты Shift+4");
+    assert!(!app.commands_visible(), "Shift+4 скрывает команды");
+
+    app.handle_key(shift('4'));
+    assert!(app.commands_visible(), "Shift+4 возвращает команды");
+}
+
+#[test]
 fn bracket_keys_narrow_and_widen_the_text() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 4);
