@@ -271,6 +271,18 @@ fn title_highlights_the_bookmark_label() {
 }
 
 #[test]
+fn title_hides_the_bookmark_label_once_the_line_is_scrolled() {
+    let (_tmp, mut app) = app_with_store_and_bookmarks();
+    app.set_scroll(2);
+    let (lines, _) = draw(&mut app, 120, 8);
+    let title = &lines[1];
+    assert!(
+        !title.contains("Абзац номер 0"),
+        "метка привязана к строке закладки, а не к блоку: {title}"
+    );
+}
+
+#[test]
 fn note_marker_tints_only_the_anchored_line_of_the_block() {
     let tmp = dir();
     std::fs::write(tmp.path().join("book.md"), paragraphs(30)).expect("файл");
@@ -338,14 +350,14 @@ fn panel_digits_highlight_the_active_block() {
     let (panel_row, panel_col) = panel_digit(&lines, "Главы");
     assert_eq!(
         fg(&buffer, panel_col, panel_row),
-        Some(ratatui::style::Color::DarkGray),
-        "неактивная панель тусклая"
+        Some(ratatui::style::Color::Yellow),
+        "неактивная панель оранжевая"
     );
     let text_col = text_digit(&lines[1]);
     assert_eq!(
         fg(&buffer, text_col, 1),
-        Some(ratatui::style::Color::Yellow),
-        "активный текст жёлтый"
+        Some(ratatui::style::Color::White),
+        "активная цифра белая"
     );
 
     app.handle_key(crossterm::event::KeyEvent::new(
@@ -356,14 +368,14 @@ fn panel_digits_highlight_the_active_block() {
     let (panel_row, panel_col) = panel_digit(&lines, "Главы");
     assert_eq!(
         fg(&buffer, panel_col, panel_row),
-        Some(ratatui::style::Color::Yellow),
-        "активная панель жёлтая"
+        Some(ratatui::style::Color::White),
+        "активная панель белая"
     );
     let text_col = text_digit(&lines[1]);
     assert_eq!(
         fg(&buffer, text_col, 1),
-        Some(ratatui::style::Color::DarkGray),
-        "текст стал тусклым"
+        Some(ratatui::style::Color::Yellow),
+        "неактивный текст оранжевый"
     );
 }
 

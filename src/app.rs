@@ -24,11 +24,16 @@ pub const TEXT_INDENT: u16 = 1;
 /// Шаг клавиш `[`/`]`: уже/шире колонка, и её минимальная ширина.
 const COL_STEP: i16 = 4;
 const COL_MIN: u16 = 20;
+/// Пустые строки хвоста: документ докручивается на это число строк после
+/// последней, проценты от них не зависят.
+const SCROLL_TAIL: usize = 13;
 /// Ширины постоянных колонок и минимальная ширина центральной рамки — та же
 /// геометрия, что использует рендер `ui::reader`.
 pub const LEFT_W: u16 = 24;
 pub const RIGHT_W: u16 = 36;
 pub const MIN_CENTER: u16 = 18;
+/// Внешнее поле окна: рамка и колонки отступают от краёв терминала.
+pub const WIN_PAD: u16 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -403,9 +408,10 @@ impl App {
         self.help_open
     }
 
-    /// Ширина рамки текста при текущих колонках — та же геометрия, что у рендера.
+    /// Ширина рамки текста при текущих колонках — та же геометрия, что у рендера:
+    /// колонки раскладываются внутри поля `WIN_PAD`, а не по краям окна.
     fn center_width(&self) -> u16 {
-        let full = self.width;
+        let full = self.width.saturating_sub(2 * WIN_PAD);
         let right = self.bookmarks_visible() || self.commands_visible();
         if self.toc_visible() && right && full >= LEFT_W + RIGHT_W + 2 + MIN_CENTER {
             full - LEFT_W - RIGHT_W - 2
@@ -428,10 +434,13 @@ impl App {
         target.clamp(low, max_wrap)
     }
 
-    /// Закладка на текущем блоке — её метку показывает статус-бар.
+    /// Закладка на текущей строке — её метку показывает статус-бар. Метка
+    /// завязывает на строку (якорь в строку через текущую раскладку), а не на весь блок.
     pub fn bookmark_at(&self) -> Option<&Bookmark> {
-        let block = self.anchor().block;
-        self.bookmarks.iter().find(|b| b.anchor.block == block)
+        let scroll = self.scroll;
+        self.bookmarks
+            .iter()
+            .find(|b| anchor_to_scroll(&self.layout, self.document(), b.anchor) == scroll)
     }
 
     pub fn languages(&self) -> Vec<&str> {
@@ -494,6 +503,12 @@ impl App {
     }
 
     pub fn max_scroll(&self) -> usize {
+        self.content_max_scroll() + SCROLL_TAIL
+    }
+
+    /// Последняя строка содержимого (без пустого хвоста) — предел, на котором
+    /// прогресс достигает 100%.
+    pub fn content_max_scroll(&self) -> usize {
         self.layout.len().saturating_sub(self.viewport_height())
     }
 
@@ -767,8 +782,10 @@ impl App {
     }
 
     fn clamp_to_viewport(&self, row: usize) -> usize {
-        let bottom = self.scroll + self.viewport_height().saturating_sub(1);
-        row.clamp(self.scroll, bottom.min(self.layout.len().saturating_sub(1)))
+        let max_row = self.layout.len().saturating_sub(1);
+        let top = self.scroll.min(max_row);
+        let bottom = self.scroll.saturating_add(self.viewport_height()).saturating_sub(1);
+        row.clamp(top, bottom.min(max_row).max(top))
     }
 
     /// Строка курсора pick-режима — для подсветки в рендере.
@@ -1466,8 +1483,8 @@ impl App {
 
     /// Прогресс чтения в процентах (0..=100).
     pub fn percent(&self) -> f32 {
-        let max = self.max_scroll();
-        if max == 0 { 100.0 } else { self.scroll as f32 / max as f32 * 100.0 }
+        let max = self.content_max_scroll();
+        if max == 0 { 100.0 } else { self.scroll.min(max) as f32 / max as f32 * 100.0 }
     }
 
     /// Сохранить позицию и текущий язык в хранилище.

@@ -134,8 +134,8 @@ fn navigation_keys_move_the_viewport() {
     assert_eq!(app.scroll(), 6);
 
     app.handle_key(key(KeyCode::Char('G')));
-    // 60 абзацев с отступами = 119 строк, видимых 6.
-    assert_eq!(app.scroll(), 113, "низ документа зажат");
+    // 60 абзацев = 119 строк, видимых 6 — плюс 13 пустых строк хвоста.
+    assert_eq!(app.scroll(), 113 + 13, "низ документа докручивается до хвоста");
     app.handle_key(key(KeyCode::Char('g')));
     assert_eq!(app.scroll(), 0);
 
@@ -147,6 +147,42 @@ fn navigation_keys_move_the_viewport() {
     assert_eq!(app.scroll(), end);
     app.handle_wheel(false);
     assert_eq!(app.scroll(), end, "конец документа зажат");
+}
+
+#[test]
+fn wrap_width_matches_the_column_layout_across_sizes() {
+    for width in [60, 70, 78, 80, 96, 120] {
+        let tmp = dir();
+        let base = book_pair(tmp.path(), 40);
+        let mut app = load(&base, None);
+        app.set_size(width, 20);
+        assert!(
+            app.wrap_width() >= 20,
+            "перенос не обжимается у левого края при ширине {width}: {}",
+            app.wrap_width()
+        );
+    }
+}
+
+#[test]
+fn scroll_tail_keeps_percent_at_the_end() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 30);
+    let mut app = load(&base, None);
+    app.set_size(40, 10);
+
+    assert_eq!(app.max_scroll() - app.content_max_scroll(), 13, "там 13 пустых строк");
+    let content_end = app.content_max_scroll();
+    app.set_scroll(content_end);
+    let percent_at_end = app.percent();
+    assert_eq!(percent_at_end, 100.0, "прогресс на конце содержимого");
+    app.set_scroll(app.max_scroll());
+    assert_eq!(app.percent(), percent_at_end, "хвост не влияет на проценты");
+    assert_eq!(
+        app.anchor().block,
+        app.document().len() - 1,
+        "даже в хвосте якорь на последнем блоке"
+    );
 }
 
 #[test]
@@ -434,16 +470,15 @@ fn text_wraps_to_the_current_column_width() {
     let mut app = load(&base, None);
     app.set_size(60, 10);
     let shift = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
-    // 60 − левая 24 − прочие 1 = 35 рамка; внутри минус борта, индент (2),
-    // запас (5).
-    assert_eq!(app.layout().width(), 26, "перенос по фактической ширине центра");
+    // 60 − поле 1·2 − левая 24 − борта 2 − индент 2 − запас 5 = 24.
+    assert_eq!(app.layout().width(), 24, "перенос по фактической ширине центра");
 
     app.handle_key(shift('4'));
     app.handle_key(shift('3'));
-    assert_eq!(app.layout().width(), 26, "левая колонка ещё стоит");
+    assert_eq!(app.layout().width(), 24, "левая колонка ещё стоит");
 
     app.handle_key(shift('2'));
-    assert_eq!(app.layout().width(), 51, "без колонок текст на всю ширину 60−2−2−5");
+    assert_eq!(app.layout().width(), 49, "без колонок текст на 60−2−2−2−5");
 }
 
 #[test]

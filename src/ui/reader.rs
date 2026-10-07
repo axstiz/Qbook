@@ -10,7 +10,7 @@ use ratatui::widgets::{
 };
 
 use crate::app::{
-    App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus, TEXT_INDENT,
+    App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus, TEXT_INDENT, WIN_PAD,
 };
 use crate::model::{BlockKind, LineInfo};
 use crate::parse::txt::{list_marker, strip_heading};
@@ -27,8 +27,6 @@ const BAR_WIDE_AT: u16 = 70;
 const PROGRESS_CELLS: usize = 14;
 /// Минимальная высота блока «Заметки» при делении правой колонки.
 const BOOKMARKS_MIN: u16 = 3;
-/// Поля от краёв окна до рамок панелей.
-const WIN_PAD: u16 = 1;
 
 /// Динамическая подсказка бара: клавиши текущего блока жёлтым (как на полке),
 /// описания — тусклые. `t язык` только у текста, у заметок добавлена `h полка`.
@@ -176,12 +174,14 @@ fn render_text(app: &App, frame: &mut Frame, area: Rect, active: bool) {
         .border_style(border)
         .title(title_line(app));
     render_text_lines(app, frame, inner);
-    let mut state = ScrollbarState::new(app.max_scroll()).position(app.scroll());
-    frame.render_stateful_widget(
-        Scrollbar::new(ScrollbarOrientation::VerticalRight),
-        inner,
-        &mut state,
-    );
+    if app.content_max_scroll() > 0 {
+        let mut state = ScrollbarState::new(app.max_scroll()).position(app.scroll());
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            inner,
+            &mut state,
+        );
+    }
     frame.render_widget(block, area);
     fade_bottom(frame, inner);
 }
@@ -299,12 +299,12 @@ fn block_frame(digit: &str, title: &str, active: bool) -> Block<'static> {
     Block::bordered().border_type(BorderType::Rounded).border_style(border).title(Line::from(spans))
 }
 
-/// Стиль цифры панели на рамке: активная жёлтая, неактивная тусклая.
+/// Стиль цифры панели на рамке: активная белая, неактивные оранжевые.
 fn digit_style(active: bool) -> Style {
     if active {
-        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
     } else {
-        Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+        Style::new().fg(Color::Yellow)
     }
 }
 
