@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::align::{Alignment, align};
-use crate::cli::find_sidecars;
+use crate::cli::{find_sidecars, lang_from_filename};
 use crate::model::{Anchor, Block, Document, Layout, LineInfo, anchor_to_scroll, scroll_to_anchor};
 use crate::parse;
 use crate::store::{Bookmark, DEFAULT_NOTE_COLOR, Store, StoreError, document_hash};
@@ -193,6 +193,20 @@ struct Pick {
 }
 
 impl App {
+    /// Открыть книгу, определив базовый язык автоматически: суффикс имени
+    /// (`книга.ru.md`), метаданные EPUB (`dc:language`) или эвристику текста
+    /// (кириллица/латиница). Распознаём только `en` и `ru`.
+    pub fn load_auto(
+        path: &Path,
+        extra: &[(String, PathBuf)],
+        store: Option<Store>,
+    ) -> Result<Self, AppError> {
+        let lang = lang_from_filename(path)
+            .or_else(|| parse::detect_lang(path))
+            .unwrap_or_else(|| "en".to_owned());
+        Self::load(path, &lang, extra, store)
+    }
+
     /// Загрузить книгу: база `base_lang`, сайдкары `книга.<lang>.*` и явные
     /// `--variant`. Выравнивание берётся из кэша хранилища или строится заново.
     pub fn load(
@@ -238,6 +252,13 @@ impl App {
         } else {
             None
         };
+        if let Some(id) = book_id
+            && let Some(store) = &store
+            && let Some(existing) = store.get_book(id)?
+            && existing.base_lang != base_lang
+        {
+            store.update_base_lang(id, base_lang)?;
+        }
         let progress = match (&store, book_id) {
             (Some(store), Some(id)) => store.get_progress(id)?,
             _ => None,
@@ -1230,17 +1251,15 @@ impl App {
         if arg.is_empty() {
             return Some(": open нужен путь".to_owned());
         }
-        let default_lang = self.default_lang.clone();
         let path = Path::new(arg);
         let store = match &self.store {
             Some(store) => store.reopen().ok(),
             None => None,
         };
-        match App::load(path, &default_lang, &[], store) {
+        match App::load_auto(path, &[], store) {
             Ok(mut app) => {
                 let title = app.title().to_owned();
-                let _ = self.register_book(path);
-                app.default_lang = default_lang;
+                app.default_lang = app.base_lang().to_owned();
                 *self = app;
                 self.set_notice(format!(": открыт «{title}»"));
                 None
@@ -1250,11 +1269,13 @@ impl App {
     }
 
     fn register_book(&mut self, path: &Path) -> Result<(), String> {
-        let doc = parse::load(path, &self.default_lang).map_err(|e| e.to_string())?;
+        let lang = lang_from_filename(path)
+            .or_else(|| parse::detect_lang(path))
+            .unwrap_or_else(|| "en".to_owned());
+        let doc = parse::load(path, &lang).map_err(|e| e.to_string())?;
         let title = doc.title().to_owned();
         let (mtime, size) = file_stamp(path);
         let key = path.display().to_string();
-        let lang = self.default_lang.clone();
         let Some(store) = self.store.as_ref() else {
             return Err("нет открытого хранилища".to_owned());
         };

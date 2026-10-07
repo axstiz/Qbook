@@ -10,9 +10,10 @@ pub struct Cli {
     /// Путь к книге: epub, txt или md. Без пути открывается полка.
     pub path: Option<PathBuf>,
 
-    /// Язык исходного текста (ISO 639-1)
-    #[arg(long, default_value = "en")]
-    pub lang: String,
+    /// Язык исходного текста (ISO 639-1). Без флага определяется
+    /// автоматически: по суффиксу имени книги, метаданным EPUB или тексту.
+    #[arg(long)]
+    pub lang: Option<String>,
 
     /// Файл перевода, формат LANG=PATH; можно указывать несколько раз
     #[arg(long = "variant", value_name = "LANG=PATH", value_parser = parse_variant)]
@@ -53,4 +54,30 @@ pub fn find_sidecars(path: &Path) -> Vec<(String, PathBuf)> {
         .collect();
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found
+}
+
+/// Коды, которые умеем распознавать автоматически: пока только `en` и `ru`.
+const KNOWN_LANGS: &[&str] = &["en", "ru"];
+
+/// Код языка из суффикса имени книги (`книга.ru.md`, `chapter.en.txt`).
+/// Совпадает с паттерном сайдкара, но ограничен распознаваемыми языками,
+/// чтобы не принимать за язык любого слова вроде `том.1`.
+pub fn lang_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let (base, lang) = stem.rsplit_once('.')?;
+    if !base.is_empty() && KNOWN_LANGS.contains(&lang) { Some(lang.to_owned()) } else { None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suffix_recognizes_known_language_names() {
+        assert_eq!(lang_from_filename(Path::new("book.ru.md")).as_deref(), Some("ru"));
+        assert_eq!(lang_from_filename(Path::new("chapter.en.txt")).as_deref(), Some("en"));
+        assert_eq!(lang_from_filename(Path::new("book.md")), None);
+        assert_eq!(lang_from_filename(Path::new("том.3.md")), None, "не имя языка");
+        assert_eq!(lang_from_filename(Path::new("works")), None);
+    }
 }

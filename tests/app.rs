@@ -52,6 +52,52 @@ fn loads_base_and_sorted_sidecar_languages() {
 }
 
 #[test]
+fn load_auto_detects_language_from_content() {
+    let tmp = dir();
+    let russian = tmp.path().join("rho_index.md");
+    write(&russian, "Это русский роман: глава первая, повествование кириллицей.");
+    let app = App::load_auto(&russian, &[], None).expect("загрузка");
+    assert_eq!(app.base_lang(), "ru", "кириллица распознаётся");
+    assert_eq!(app.languages(), ["ru"]);
+
+    let english = tmp.path().join("chapter.txt");
+    write(&english, "This English novel opens with a long narrative in latin letters.");
+    let app = App::load_auto(&english, &[], None).expect("загрузка");
+    assert_eq!(app.base_lang(), "en");
+}
+
+#[test]
+fn load_auto_prefers_the_filename_suffix_over_the_content() {
+    let tmp = dir();
+    let file = tmp.path().join("book.ru.txt");
+    write(&file, "English words but the file name says it is Russian.");
+    let app = App::load_auto(&file, &[], None).expect("загрузка");
+    assert_eq!(app.base_lang(), "ru");
+    assert_eq!(app.languages(), ["ru"]);
+}
+
+#[test]
+fn load_auto_fixes_a_stale_base_lang_in_the_store() {
+    let tmp = dir();
+    let base = tmp.path().join("story.md");
+    let key = base.display().to_string();
+    write(&base, "Русская история с длинным кириллическим текстом.");
+
+    let data = tmp.path().join("data");
+    let store = Store::open_in(&data).expect("store");
+    store.add_book(&key, "История", "en", 1, 2).expect("add");
+
+    App::load_auto(&base, &[], Some(store)).expect("загрузка");
+
+    let read = Store::open_in(&data).expect("store после");
+    let book = read.book_id(&key).expect("id").and_then(|id| read.get_book(id).ok()).flatten();
+    assert_eq!(book.map(|b| b.base_lang).as_deref(), Some("ru"), "полка видит уточнённый язык");
+
+    let app = App::load_auto(&base, &[], None).expect("переоткрыть");
+    assert_eq!(app.current_lang(), "ru");
+}
+
+#[test]
 fn explicit_variant_beats_the_sidecar_with_the_same_language() {
     let tmp = dir();
     let base = tmp.path().join("book.md");

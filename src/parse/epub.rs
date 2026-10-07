@@ -23,6 +23,15 @@ pub fn load(path: &Path) -> Result<Document, ParseError> {
     parse_archive(&mut zip, &shown)
 }
 
+/// Язык из метаданных OPF (`dc:language`), если он указан.
+pub fn detect_lang(path: &Path) -> Option<String> {
+    let mut zip = ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
+    let opf_path = read_container(&mut zip).ok()?;
+    let opf = read_entry(&mut zip, &opf_path).ok()?;
+    let (_, lang) = metadata(&Html::parse_document(&opf));
+    (!lang.is_empty()).then_some(lang)
+}
+
 fn parse_archive<R: std::io::Read + std::io::Seek>(
     zip: &mut ZipArchive<R>,
     path: &str,

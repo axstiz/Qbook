@@ -14,9 +14,10 @@ use qbook::ui;
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let store = Store::open_default()?;
-    let mut app = match cli.path {
-        Some(path) => App::load(&path, &cli.lang, &cli.variants, Some(store))?,
-        None => App::shelf(Some(store), &cli.lang)?,
+    let mut app = match (&cli.path, cli.lang.as_deref()) {
+        (Some(path), Some(lang)) => App::load(path, lang, &cli.variants, Some(store))?,
+        (Some(path), None) => App::load_auto(path, &cli.variants, Some(store))?,
+        (None, _) => App::shelf(Some(store), cli.lang.as_deref().unwrap_or("en"))?,
     };
 
     let mut terminal = ratatui::init();

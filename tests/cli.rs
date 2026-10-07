@@ -18,7 +18,7 @@ fn touch(path: &Path) {
 fn parses_path_with_defaults() {
     let cli = Cli::try_parse_from(["qbook", "book.epub"]).expect("разбор");
     assert_eq!(cli.path, Some(PathBuf::from("book.epub")));
-    assert_eq!(cli.lang, "en");
+    assert_eq!(cli.lang, None, "без --lang язык определяется автоматически");
     assert!(cli.variants.is_empty());
 }
 
@@ -42,7 +42,7 @@ fn parses_repeated_variants() {
             ("fr".to_owned(), PathBuf::from("b.fr.md")),
         ]
     );
-    assert_eq!(cli.lang, "de");
+    assert_eq!(cli.lang, Some("de".to_owned()));
 }
 
 #[test]

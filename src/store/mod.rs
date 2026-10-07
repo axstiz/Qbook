@@ -183,6 +183,12 @@ impl Store {
             .optional()?)
     }
 
+    /// Переписать язык исходного текста книги (например, после автоопределения).
+    pub fn update_base_lang(&self, id: i64, lang: &str) -> Result<(), StoreError> {
+        self.conn.execute("UPDATE books SET base_lang = ?1 WHERE id = ?2", params![lang, id])?;
+        Ok(())
+    }
+
     pub fn get_book(&self, id: i64) -> Result<Option<Book>, StoreError> {
         Ok(self
             .conn
@@ -495,6 +501,17 @@ mod tests {
         let bytes = encode_map(&map).expect("кодирование");
         assert_eq!(decode_map(&bytes).expect("декодирование"), map);
         assert_eq!(decode_map(&encode_map(&[]).expect("кодирование")).expect("декодирование"), []);
+    }
+
+    #[test]
+    fn base_lang_can_be_updated() {
+        let dir = std::env::temp_dir().join("qbook-base-lang");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open_in(&dir).expect("store");
+        let id = store.add_book("/x.md", "X", "en", 1, 2).expect("add");
+        store.update_base_lang(id, "ru").expect("update");
+        let book = store.get_book(id).expect("get").expect("book");
+        assert_eq!(book.base_lang, "ru");
     }
 
     #[test]

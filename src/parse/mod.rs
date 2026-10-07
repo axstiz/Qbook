@@ -67,6 +67,40 @@ pub(crate) fn read_to_string(path: &Path) -> Result<String, ParseError> {
     Ok(decode(&bytes))
 }
 
+/// Грубая прикидка языка по охвату алфавитов: кириллица преобладает → `ru`,
+/// иначе латинские буквы → `en`. Другие языки в v1 не различаем.
+pub fn text_lang(text: &str) -> &'static str {
+    const SAMPLE_CHARS: usize = 65_536;
+    let mut cyr = 0u32;
+    let mut lat = 0u32;
+    for ch in text.chars().take(SAMPLE_CHARS) {
+        if !ch.is_alphabetic() {
+            continue;
+        }
+        if ('\u{0400}'..='\u{04FF}').contains(&ch) {
+            cyr += 1;
+        } else if ch.is_ascii_alphabetic() {
+            lat += 1;
+        }
+    }
+    let letters = cyr + lat;
+    if letters >= 12 && f64::from(cyr) / f64::from(letters) > 0.5 { "ru" } else { "en" }
+}
+
+/// Язык книги из файла: для EPUB это `dc:language` из OPF, для текста —
+/// эвристика по содержимому. Распознаём только `en` и `ru`.
+pub fn detect_lang(path: &Path) -> Option<String> {
+    let format = Format::detect(path)?;
+    let lang = match format {
+        Format::Epub => epub::detect_lang(path)?,
+        Format::PlainText => {
+            let text = read_to_string(path).ok()?;
+            text_lang(&text).to_owned()
+        }
+    };
+    Some(lang)
+}
+
 /// Файлы часто приходят в windows- или mac-кодировке, поэтому сначала пробуем UTF-8
 /// без BOM, потом с BOM, и только в конце откатываемся на lossy-разбор.
 fn decode(bytes: &[u8]) -> String {
@@ -160,6 +194,23 @@ mod tests {
         f.write_all(b"PK\x03\x04rest").expect("записать");
         drop(f);
         assert_eq!(Format::detect(&path), Some(Format::Epub));
+    }
+
+    #[test]
+    fn text_lang_distinguishes_cyrillic_from_latin() {
+        assert_eq!(text_lang("Это русский текст повести кириллицей."), "ru");
+        assert_eq!(text_lang("This is an English story told in Latin letters."), "en");
+        assert_eq!(text_lang("коротк"), "en", "мало букв — в пользу дефолта");
+        assert_eq!(text_lang(""), "en");
+    }
+
+    #[test]
+    fn detect_lang_reads_txt_content() {
+        let path = temp_path("detect").join("book.md");
+        std::fs::write(&path, "Глава. Очень длинный русский абзац.").expect("записать");
+        assert_eq!(detect_lang(&path).as_deref(), Some("ru"));
+        std::fs::write(&path, "Chapter. A fairly long paragraph in english.").expect("записать");
+        assert_eq!(detect_lang(&path).as_deref(), Some("en"));
     }
 
     #[test]
