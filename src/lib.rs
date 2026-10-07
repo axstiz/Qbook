@@ -2,6 +2,7 @@ pub mod align;
 pub mod app;
 pub mod cli;
 pub mod clip;
+pub mod config;
 pub mod event;
 pub mod model;
 pub mod parse;

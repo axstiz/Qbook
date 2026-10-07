@@ -18,6 +18,18 @@ pub struct Cli {
     /// Файл перевода, формат LANG=PATH; можно указывать несколько раз
     #[arg(long = "variant", value_name = "LANG=PATH", value_parser = parse_variant)]
     pub variants: Vec<(String, PathBuf)>,
+
+    /// Пресет темы поверх встроенного дефолта (файл конфига перекрывает его)
+    #[arg(long, value_name = "NAME", value_parser = parse_preset)]
+    pub theme: Option<String>,
+}
+
+fn parse_preset(raw: &str) -> Result<String, String> {
+    if crate::config::PRESETS.contains(&raw) {
+        Ok(raw.to_owned())
+    } else {
+        Err(format!("неизвестный пресет «{raw}», доступны: {}", crate::config::PRESETS.join(", ")))
+    }
 }
 
 fn parse_variant(raw: &str) -> Result<(String, PathBuf), String> {

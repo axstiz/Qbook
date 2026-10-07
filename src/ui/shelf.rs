@@ -3,18 +3,19 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use crate::app::{App, InputPurpose};
+use crate::config::Theme;
 use crate::ui::btop_gauge;
 
 const PROGRESS_CELLS: usize = 14;
 
-/// Цветная «клавиша» в баре: жёлтая подпись на тёмном фоне.
-fn key_span<'a>(label: &'a str) -> Span<'a> {
-    Span::styled(label, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+/// Цветная «клавиша» в баре: подпись клавишным цветом, жирная.
+fn key_span<'a>(theme: &Theme, label: &'a str) -> Span<'a> {
+    Span::styled(label, Style::new().fg(theme.key).add_modifier(Modifier::BOLD))
 }
 
 /// Пометки между клавишами в баре.
@@ -42,7 +43,7 @@ pub fn render(app: &App, frame: &mut Frame) {
         )));
     } else {
         for (index, book) in app.shelf_books().iter().enumerate() {
-            lines.push(book_line(book, index == app.shelf_cursor()));
+            lines.push(book_line(app.colors(), book, index == app.shelf_cursor()));
         }
     }
     lines.truncate(inner.height as usize);
@@ -55,12 +56,12 @@ pub fn render(app: &App, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(footer_line(app)), bar);
 }
 
-fn book_line(book: &crate::app::ShelfBook, selected: bool) -> Line<'static> {
+fn book_line(theme: &Theme, book: &crate::app::ShelfBook, selected: bool) -> Line<'static> {
     let title_style =
         if selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
     let dim = Style::new().add_modifier(Modifier::DIM);
     let marker = if selected {
-        Span::styled("► ", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        Span::styled("► ", Style::new().fg(theme.key).add_modifier(Modifier::BOLD))
     } else {
         Span::raw("  ")
     };
@@ -70,13 +71,14 @@ fn book_line(book: &crate::app::ShelfBook, selected: bool) -> Line<'static> {
         Span::styled(format!(" · {}", book.langs.join(" ")), dim),
         Span::raw(" "),
     ];
-    spans.extend(btop_gauge(book.percent, PROGRESS_CELLS).spans);
+    spans.extend(btop_gauge(theme, book.percent, PROGRESS_CELLS).spans);
     spans.push(Span::raw(" "));
     spans.push(Span::styled(format!("{:5.1}% · {}", book.percent, format_date(book.date)), dim));
     Line::from(spans)
 }
 
 fn footer_line(app: &App) -> Line<'static> {
+    let colors = app.colors();
     if let Some(buffer) = app.typing_buffer() {
         let label = match app.typing_purpose() {
             Some(InputPurpose::RenameBookmark | InputPurpose::NewBookmark) => "Заметка:",
@@ -87,16 +89,16 @@ fn footer_line(app: &App) -> Line<'static> {
             Span::raw(format!(" {buffer}_")),
         ])
     } else if let Some(error) = app.shelf_error() {
-        Line::from(Span::styled(format!("⚠ {error}"), Style::new().fg(Color::Yellow)))
+        Line::from(Span::styled(format!("⚠ {error}"), Style::new().fg(colors.accent)))
     } else {
         Line::from(vec![
-            key_span("Enter"),
+            key_span(colors, "Enter"),
             dim(" открыть · "),
-            key_span("a"),
+            key_span(colors, "a"),
             dim(" добавить · "),
-            key_span("d"),
+            key_span(colors, "d"),
             dim(" удалить · "),
-            key_span("q"),
+            key_span(colors, "q"),
             dim(" выход"),
         ])
     }

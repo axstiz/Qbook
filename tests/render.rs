@@ -307,7 +307,7 @@ fn note_marker_tints_only_the_anchored_line_of_the_block() {
     assert!(lines[3].contains("▎"), "маркер заметки на якорной строке: {:?}", lines[3]);
     assert_eq!(
         buffer[(3, 3)].style().fg,
-        Some(qbook::ui::note_color(5)),
+        Some(qbook::ui::note_color(app.colors(), 5)),
         "маркер цвета заметки: {:?}",
         buffer[(3, 3)].style()
     );

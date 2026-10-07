@@ -6,38 +6,38 @@ use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 
 use crate::app::{App, Screen};
-use crate::store::NOTE_COLOR_COUNT;
+use crate::config::Theme;
 
-/// Семь цветов заметки в порядке индексов хранилища: красный, зелёный,
-/// жёлтый, синий, пурпурный, голубой, белый.
-pub fn note_color(index: u8) -> Color {
-    const COLORS: [Color; NOTE_COLOR_COUNT as usize] = [
-        Color::Red,
-        Color::Green,
-        Color::Yellow,
-        Color::Blue,
-        Color::Magenta,
-        Color::Cyan,
-        Color::White,
-    ];
-    COLORS[usize::from(index).min(COLORS.len() - 1)]
+/// Цвет заметки по индексу хранилища из текущей темы.
+pub fn note_color(theme: &Theme, index: u8) -> Color {
+    theme.notes[usize::from(index).min(theme.notes.len() - 1)]
 }
 
-/// btop-градиент прогресса: заполненная часть — от тёмно-фиолетового к яркому
-/// неоново-сиреневому, пустая — тускло-серые штрихи.
-pub fn btop_gauge(percentage: f32, width: usize) -> Line<'static> {
+/// Градиент прогресса из цветов темы: заполненная часть интерполируется от
+/// `gauge_start` к `gauge_end`, пустая — штрихи `gauge_empty`.
+pub fn btop_gauge(theme: &Theme, percentage: f32, width: usize) -> Line<'static> {
+    let (start, end, empty) = theme.gauge_colors();
     let percent = percentage.clamp(0.0, 100.0);
     let filled = ((width as f32) * (percent / 100.0)).round() as usize;
+    let mix =
+        |a: u8, b: u8, factor: f32| (f32::from(a) + (f32::from(b) - f32::from(a)) * factor) as u8;
     let mut spans = Vec::with_capacity(width);
     for i in 0..width {
         if i < filled {
             let factor = i as f32 / width.max(1) as f32;
-            let r = (90.0 + factor * 120.0) as u8;
-            let g = (30.0 + factor * 60.0) as u8;
-            let b = (140.0 + factor * 115.0) as u8;
-            spans.push(Span::styled("▮", ratatui::style::Style::new().fg(Color::Rgb(r, g, b))));
+            spans.push(Span::styled(
+                "▮",
+                ratatui::style::Style::new().fg(Color::Rgb(
+                    mix(start.0, end.0, factor),
+                    mix(start.1, end.1, factor),
+                    mix(start.2, end.2, factor),
+                )),
+            ));
         } else {
-            spans.push(Span::styled("▯", ratatui::style::Style::new().fg(Color::Rgb(50, 50, 50))));
+            spans.push(Span::styled(
+                "▯",
+                ratatui::style::Style::new().fg(Color::Rgb(empty.0, empty.1, empty.2)),
+            ));
         }
     }
     Line::from(spans)

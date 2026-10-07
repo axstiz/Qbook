@@ -7,14 +7,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::align::{Alignment, align};
 use crate::cli::{find_sidecars, lang_from_filename};
+use crate::config::{Config, Theme};
 use crate::model::{Anchor, Block, Document, Layout, LineInfo, anchor_to_scroll, scroll_to_anchor};
 use crate::parse;
 use crate::store::{Bookmark, DEFAULT_NOTE_COLOR, Store, StoreError, document_hash};
 
 /// Период автосохранения прогресса.
 const SAVE_INTERVAL: Duration = Duration::from_secs(5);
-/// Строк на прокрутку колесом мыши.
-const WHEEL_LINES: isize = 3;
 const DEFAULT_WIDTH: u16 = 80;
 const DEFAULT_HEIGHT: u16 = 24;
 /// Резерв под префиксы блоков (цитаты, стихи) и скроллбар справа.
@@ -182,6 +181,8 @@ pub struct App {
     copied: Option<String>,
     /// Фрагмент для отправки терминалу через OSC 52 — забирает `main`.
     clipboard_out: Option<String>,
+    /// Цвета и настройки по умолчанию из конфига.
+    config: Config,
 }
 
 /// Режим курсора над строками текста.
@@ -210,10 +211,20 @@ impl App {
         extra: &[(String, PathBuf)],
         store: Option<Store>,
     ) -> Result<Self, AppError> {
+        Self::load_auto_with(path, extra, store, Config::default())
+    }
+
+    /// То же с явной конфигурацией (пресет плюс файл из `main`).
+    pub fn load_auto_with(
+        path: &Path,
+        extra: &[(String, PathBuf)],
+        store: Option<Store>,
+        config: Config,
+    ) -> Result<Self, AppError> {
         let lang = lang_from_filename(path)
             .or_else(|| parse::detect_lang(path))
             .unwrap_or_else(|| "en".to_owned());
-        Self::load(path, &lang, extra, store)
+        Self::load_with(path, &lang, extra, store, config)
     }
 
     /// Загрузить книгу: база `base_lang`, сайдкары `книга.<lang>.*` и явные
@@ -223,6 +234,17 @@ impl App {
         base_lang: &str,
         extra: &[(String, PathBuf)],
         store: Option<Store>,
+    ) -> Result<Self, AppError> {
+        Self::load_with(path, base_lang, extra, store, Config::default())
+    }
+
+    /// То же с явной конфигурацией.
+    pub fn load_with(
+        path: &Path,
+        base_lang: &str,
+        extra: &[(String, PathBuf)],
+        store: Option<Store>,
+        config: Config,
     ) -> Result<Self, AppError> {
         let base = parse::load(path, base_lang)?;
 
@@ -317,14 +339,14 @@ impl App {
             typing: None,
             bookmarks: Vec::new(),
             bookmark_cursor: 0,
-            show_toc: true,
-            show_bookmarks: true,
-            show_commands: true,
+            show_toc: config.defaults.toc,
+            show_bookmarks: config.defaults.bookmarks,
+            show_commands: config.defaults.commands,
             toc_cursor: 0,
             command_cursor: 0,
             focus: ReaderFocus::Text,
             help_open: false,
-            col_extra: 0,
+            col_extra: config.defaults.column_extra,
             resize_limit: None,
             pick: None,
             copied: None,
@@ -332,6 +354,7 @@ impl App {
             default_lang: base_lang.to_owned(),
             notice: None,
             notice_left: 0,
+            config,
         };
         app.reload_bookmarks();
         Ok(app)
@@ -339,6 +362,15 @@ impl App {
 
     /// Полка: список книг из хранилища. Книга открывается клавишей `Enter`.
     pub fn shelf(store: Option<Store>, default_lang: &str) -> Result<Self, AppError> {
+        Self::shelf_with(store, default_lang, Config::default())
+    }
+
+    /// Полка с явной конфигурацией.
+    pub fn shelf_with(
+        store: Option<Store>,
+        default_lang: &str,
+        config: Config,
+    ) -> Result<Self, AppError> {
         let doc = Document::new(default_lang, "", Vec::new());
         let layout = Layout::new(&doc, DEFAULT_WIDTH - TEXT_PAD);
         let mut app = Self {
@@ -360,14 +392,14 @@ impl App {
             typing: None,
             bookmarks: Vec::new(),
             bookmark_cursor: 0,
-            show_toc: true,
-            show_bookmarks: true,
-            show_commands: true,
+            show_toc: config.defaults.toc,
+            show_bookmarks: config.defaults.bookmarks,
+            show_commands: config.defaults.commands,
             toc_cursor: 0,
             command_cursor: 0,
             focus: ReaderFocus::Text,
             help_open: false,
-            col_extra: 0,
+            col_extra: config.defaults.column_extra,
             resize_limit: None,
             pick: None,
             copied: None,
@@ -375,9 +407,20 @@ impl App {
             default_lang: default_lang.to_owned(),
             notice: None,
             notice_left: 0,
+            config,
         };
         app.reload_shelf();
         Ok(app)
+    }
+
+    /// Конфигурация приложения (тема и настройки по умолчанию).
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Цветовые роли текущей темы — ими рисуются бар, рамки и списки.
+    pub fn colors(&self) -> &Theme {
+        &self.config.theme
     }
 
     pub fn screen(&self) -> Screen {
@@ -1539,7 +1582,8 @@ impl App {
 
     /// Колесо мыши: `up` — к началу, иначе к концу.
     pub fn handle_wheel(&mut self, up: bool) {
-        let delta = if up { -WHEEL_LINES } else { WHEEL_LINES };
+        let lines = self.config.defaults.wheel_lines;
+        let delta = if up { -lines } else { lines };
         self.scroll_by(delta);
     }
 

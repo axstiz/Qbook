@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -13,6 +13,7 @@ use crate::app::{
     App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus, ResizeLimit,
     TEXT_INDENT, WIN_PAD,
 };
+use crate::config::Theme;
 use crate::model::{BlockKind, LineInfo};
 use crate::parse::txt::{list_marker, strip_heading};
 use crate::ui::{btop_gauge, note_color};
@@ -34,6 +35,7 @@ const BOOKMARKS_MIN: u16 = 3;
 /// работают из любого блока.
 fn bar_hint(app: &App, wide: bool) -> Line<'static> {
     let focus = app.focus();
+    let colors = app.colors();
     let pairs: &[(&str, &str)] = match (focus, wide) {
         (ReaderFocus::Text, true) => &[
             ("b", "заметка"),
@@ -70,7 +72,7 @@ fn bar_hint(app: &App, wide: bool) -> Line<'static> {
         if i > 0 {
             spans.push(Span::raw(sep));
         }
-        spans.push(Span::styled(*key, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(*key, Style::new().fg(colors.key).add_modifier(Modifier::BOLD)));
         if !desc.is_empty() {
             spans.push(Span::styled(format!(" {desc}"), Style::new().add_modifier(Modifier::DIM)));
         }
@@ -82,7 +84,7 @@ fn bar_hint(app: &App, wide: bool) -> Line<'static> {
             ResizeLimit::Narrow => " [ — уже предел ",
             ResizeLimit::Wide => " ] — шире некуда ",
         };
-        spans.push(Span::styled(msg, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(msg, Style::new().fg(colors.accent).add_modifier(Modifier::BOLD)));
     }
     Line::from(spans)
 }
@@ -126,8 +128,8 @@ pub fn render(app: &App, frame: &mut Frame) {
         // Справка рисуется поверх всего, а остальной буфер тускнеет: под
         // модальным окном читатель видит тёмно-серый фон, а не контент.
         if let Some(area) = help_area(center) {
-            render_help(frame, area);
-            dim_except(frame, area);
+            render_help(frame, area, app.colors());
+            dim_except(frame, area, app.colors());
         }
     }
 }
@@ -149,7 +151,7 @@ fn help_area(center: Rect) -> Option<Rect> {
 
 /// Затемняет всё, кроме модальной справки: подложка под неё становится
 /// тёмно-серой и приглушённой.
-fn dim_except(frame: &mut Frame, keep: Rect) {
+fn dim_except(frame: &mut Frame, keep: Rect, theme: &Theme) {
     let area = frame.area();
     let buffer = frame.buffer_mut();
     for y in area.y..area.bottom() {
@@ -157,7 +159,7 @@ fn dim_except(frame: &mut Frame, keep: Rect) {
             if keep.contains(Position::new(x, y)) {
                 continue;
             }
-            buffer[(x, y)].set_style(Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM));
+            buffer[(x, y)].set_style(Style::new().fg(theme.dim).add_modifier(Modifier::DIM));
         }
     }
 }
@@ -234,12 +236,14 @@ fn render_text(app: &App, frame: &mut Frame, area: Rect, active: bool) {
             &mut state,
         );
     }
-    frame.render_widget(block_frame("1", text_title(app, area.width), active), area);
-    fade_bottom(frame, inner);
+    frame.render_widget(block_frame(app.colors(), "1", text_title(app, area.width), active), area);
+    if app.config().defaults.fade_text {
+        fade_bottom(frame, inner, app.colors());
+    }
 }
 
 /// Градиент внизу текста: последние строки плавно гаснут к нижнему краю.
-fn fade_bottom(frame: &mut Frame, inner: Rect) {
+fn fade_bottom(frame: &mut Frame, inner: Rect, theme: &Theme) {
     let rows = 3.min(inner.height);
     for i in 0..rows {
         let y = inner.y + inner.height - 1 - i;
@@ -248,7 +252,7 @@ fn fade_bottom(frame: &mut Frame, inner: Rect) {
             let mut style = cell.style();
             style = style.add_modifier(Modifier::DIM);
             if i == 0 {
-                style = style.fg(Color::DarkGray);
+                style = style.fg(theme.dim);
             }
             cell.set_style(style);
         }
@@ -274,7 +278,7 @@ fn render_text_lines(app: &App, frame: &mut Frame, area: Rect, rule_width: u16) 
             }
             let mut line = text_line(app, info);
             if selection.is_some_and(|(top, bottom)| index >= top && index <= bottom) {
-                line.style = Style::new().bg(Color::DarkGray);
+                line.style = Style::new().bg(app.colors().selection_bg);
             }
             if pick_row == Some(index) {
                 line.style = Style::new().add_modifier(Modifier::REVERSED);
@@ -284,7 +288,7 @@ fn render_text_lines(app: &App, frame: &mut Frame, area: Rect, rule_width: u16) 
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
     // Линия-разделитель занимает всю ширину рамки, а не только колонку текста.
-    let rule_style = Style::new().fg(Color::Gray);
+    let rule_style = Style::new().fg(app.colors().rule);
     for &row in &rule_rows {
         let y = area.y + row as u16;
         for x in area.x..area.x + rule_width.max(1) {
@@ -309,7 +313,7 @@ fn text_line(app: &App, info: &LineInfo) -> Line<'static> {
     };
     let mut spans = Vec::new();
     if let Some(color) = app.note_line_color(info) {
-        spans.push(Span::styled("▎", Style::new().fg(note_color(color))));
+        spans.push(Span::styled("▎", Style::new().fg(note_color(app.colors(), color))));
     }
     spans.push(Span::styled(prefix, style));
     spans.extend(style_inline(&text, style));
@@ -395,6 +399,7 @@ fn style_inline(text: &str, base: Style) -> Vec<Span<'static>> {
 /// Шапка книги: строка над всеми блоками с названием, языками, прогрессом,
 /// качеством и меткой заметки на текущем блоке.
 fn header_line(app: &App) -> Line<'static> {
+    let colors = app.colors();
     let total = app.document().len();
     let block = app.anchor().block + 1;
     let mut spans =
@@ -402,14 +407,14 @@ fn header_line(app: &App) -> Line<'static> {
     if let Some(coverage) = app.coverage().filter(|value| *value < QUALITY_WARN) {
         spans.push(Span::styled(
             format!(" · ⚠{:.0}%", coverage * 100.0),
-            Style::new().fg(Color::Yellow),
+            Style::new().fg(colors.accent),
         ));
     }
     spans.push(Span::raw(format!(" · {block}/{total}")));
     if let Some(bookmark) = app.bookmark_at() {
         spans.push(Span::styled(
             format!(" · {}", bookmark.label),
-            Style::new().fg(note_color(bookmark.color)),
+            Style::new().fg(note_color(colors, bookmark.color)),
         ));
     }
     Line::from(spans)
@@ -425,7 +430,7 @@ fn text_title(app: &App, width: u16) -> Line<'static> {
     let fixed = 2 + lang_txt.chars().count() + pct_txt.chars().count();
     let cells = (width as usize).saturating_sub(fixed + 3).clamp(1, FRAME_PROGRESS_CELLS);
     let mut spans = vec![Span::raw(lang_txt)];
-    spans.extend(btop_gauge(percent, cells).spans);
+    spans.extend(btop_gauge(app.colors(), percent, cells).spans);
     spans.push(Span::raw(pct_txt));
     Line::from(spans)
 }
@@ -438,17 +443,17 @@ fn render_header(app: &App, frame: &mut Frame, x: u16, width: u16, y: u16) {
 
 /// Рамка со скруглёнными углами и подписанным заголовком.
 /// Неактивный блок приглушается, активный остаётся ярким. В начале заголовка —
-/// цифра панели (btop): активная жёлтая, скрытые панели не рисуются вовсе.
-fn block_frame(digit: &str, title: Line<'static>, active: bool) -> Block<'static> {
-    let border = if active { Style::new() } else { Style::new().fg(Color::DarkGray) };
+/// цифра панели (btop): активная белая, скрытые панели не рисуются вовсе.
+fn block_frame(theme: &Theme, digit: &str, title: Line<'static>, active: bool) -> Block<'static> {
+    let border = if active { Style::new() } else { Style::new().fg(theme.dim) };
     let title_style = if active {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
-        Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+        Style::new().fg(theme.dim).add_modifier(Modifier::DIM)
     };
     let mut spans = Vec::new();
     if !digit.is_empty() {
-        spans.push(Span::styled(digit.to_string(), digit_style(active)));
+        spans.push(Span::styled(digit.to_string(), digit_style(theme, active)));
         spans.push(Span::raw(" "));
     }
     for span in title.spans {
@@ -457,12 +462,12 @@ fn block_frame(digit: &str, title: Line<'static>, active: bool) -> Block<'static
     Block::bordered().border_type(BorderType::Rounded).border_style(border).title(Line::from(spans))
 }
 
-/// Стиль цифры панели на рамке: активная белая, неактивные оранжевые.
-fn digit_style(active: bool) -> Style {
+/// Стиль цифры панели на рамке: активная яркая, неактивные — клавишным цветом.
+fn digit_style(theme: &Theme, active: bool) -> Style {
     if active {
-        Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+        Style::new().fg(theme.active).add_modifier(Modifier::BOLD)
     } else {
-        Style::new().fg(Color::Yellow)
+        Style::new().fg(theme.key)
     }
 }
 
@@ -479,6 +484,7 @@ fn inner_of(area: Rect) -> Rect {
 /// Левая колонка «Главы»: активный раздел подсвечен, навигационный курсор `►`.
 fn render_toc(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     let inner = inner_of(area);
+    let colors = app.colors();
     let items = app.document().toc();
     let mut lines: Vec<Line> = Vec::new();
     if items.is_empty() {
@@ -497,22 +503,22 @@ fn render_toc(app: &App, frame: &mut Frame, area: Rect, active: bool) {
             let is_active = index == current;
             let marker = if selected { "►" } else { " " };
             let title_style = if is_active {
-                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::new().fg(colors.heading).add_modifier(Modifier::BOLD)
             } else if active {
                 Style::new()
             } else {
-                Style::new().fg(Color::DarkGray)
+                Style::new().fg(colors.dim)
             };
             let indent = "  ".repeat(item.level.saturating_sub(1) as usize);
             lines.push(Line::from(vec![
-                Span::styled(marker, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(marker, Style::new().fg(colors.key).add_modifier(Modifier::BOLD)),
                 Span::raw(" "),
                 Span::styled(format!("{indent}{}", item.title), title_style),
             ]));
         }
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame("2", Line::raw(" Главы "), active), area);
+    frame.render_widget(block_frame(colors, "2", Line::raw(" Главы "), active), area);
 }
 
 /// Правая колонка: список команд и заметок. Когда видны оба блока, команды
@@ -553,6 +559,7 @@ fn render_right(app: &App, frame: &mut Frame, area: Rect) {
 /// Список заметок книги, упорядоченных по позиции, с курсором `►`.
 fn render_bookmarks(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     let inner = inner_of(area);
+    let colors = app.colors();
     let bookmarks = app.bookmarks();
     let rows = inner.height as usize;
     let start = app.bookmark_cursor().saturating_sub(rows.saturating_sub(1));
@@ -568,22 +575,23 @@ fn render_bookmarks(app: &App, frame: &mut Frame, area: Rect, active: bool) {
         } else if active {
             Style::new()
         } else {
-            Style::new().fg(Color::DarkGray)
+            Style::new().fg(colors.dim)
         };
         lines.push(Line::from(vec![
-            Span::styled(marker, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled("● ", Style::new().fg(note_color(bookmark.color))),
+            Span::styled(marker, Style::new().fg(colors.key).add_modifier(Modifier::BOLD)),
+            Span::styled("● ", Style::new().fg(note_color(colors, bookmark.color))),
             Span::styled(bookmark.label.clone(), style),
             Span::styled(format!(" · {}", format_date(bookmark.created_at)), style),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame("3", Line::raw(" Заметки "), active), area);
+    frame.render_widget(block_frame(colors, "3", Line::raw(" Заметки "), active), area);
 }
 
 /// Список полезных команд: Enter подставляет выбранную в командную строку.
 fn render_commands(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     let inner = inner_of(area);
+    let colors = app.colors();
     let rows = inner.height as usize;
     let start = app.command_cursor().saturating_sub(rows.saturating_sub(1));
     let mut lines: Vec<Line> = Vec::new();
@@ -592,19 +600,19 @@ fn render_commands(app: &App, frame: &mut Frame, area: Rect, active: bool) {
         let marker = if selected { "►" } else { " " };
         let command = if args.is_empty() { name.to_string() } else { format!("{name} {args}") };
         let name_style = if selected {
-            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::new().fg(colors.key).add_modifier(Modifier::BOLD)
         } else {
             Style::new().add_modifier(Modifier::DIM)
         };
         lines.push(Line::from(vec![
-            Span::styled(marker, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(marker, Style::new().fg(colors.key).add_modifier(Modifier::BOLD)),
             Span::raw(" "),
             Span::styled(format!(":{command}"), name_style),
             Span::styled(format!(" — {help}"), Style::new().add_modifier(Modifier::DIM)),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame("4", Line::raw(" Команды "), active), area);
+    frame.render_widget(block_frame(colors, "4", Line::raw(" Команды "), active), area);
 }
 
 /// Слот над баром: командная строка `:`, ввод метки заметки или тост.
@@ -623,7 +631,8 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, x: u16, width: u16) {
         match purpose {
             Some(InputPurpose::NewBookmark) => {
                 if let Some(color) = app.pending_bookmark_color() {
-                    spans.push(Span::styled(" ●", Style::new().fg(note_color(color))));
+                    spans
+                        .push(Span::styled(" ●", Style::new().fg(note_color(app.colors(), color))));
                     spans
                         .push(Span::raw(format!(" {} · c/C · Enter", App::note_color_name(color))));
                 }
@@ -640,7 +649,8 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, x: u16, width: u16) {
     } else if let Some(hint) = app.pick_hint() {
         Some(Line::from(Span::styled(hint, Style::new().add_modifier(Modifier::DIM))))
     } else {
-        app.notice().map(|notice| Line::from(Span::styled(notice, Style::new().fg(Color::Green))))
+        app.notice()
+            .map(|notice| Line::from(Span::styled(notice, Style::new().fg(app.colors().notice))))
     };
     frame.render_widget(Paragraph::new(line.unwrap_or_default()), slot);
 }
@@ -660,7 +670,7 @@ fn render_bar(app: &App, frame: &mut Frame, x: u16, width: u16, y: u16) {
 
 /// Оверлей справки по центру окна: одна фича на строку, рамка и метрики
 /// шапки остаются видимыми.
-fn render_help(frame: &mut Frame, area: Rect) {
+fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
     let shown = (area.height - 2) as usize;
     let lines: Vec<Line> = HELP.iter().take(shown).map(|t| Line::from(*t)).collect();
     let inner = Rect {
@@ -673,7 +683,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
     // просвечивают символы текста, оставшиеся в её пустых ячейках.
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame("", Line::raw(" Справка "), true), area);
+    frame.render_widget(block_frame(theme, "", Line::raw(" Справка "), true), area);
 }
 
 const HELP: &[&str] = &[

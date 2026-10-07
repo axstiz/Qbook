@@ -1,9 +1,10 @@
+use qbook::config::Theme;
 use qbook::ui::btop_gauge;
 use ratatui::style::Color;
 
 #[test]
 fn gauge_fills_from_dark_purple_to_violet() {
-    let line = btop_gauge(50.0, 4);
+    let line = btop_gauge(&Theme::default(), 50.0, 4);
     let spans: Vec<_> = line.spans;
     assert_eq!(spans.len(), 4, "ширина бара");
     assert_eq!(spans[0].content.as_ref(), "▮");
@@ -24,10 +25,10 @@ fn gauge_fills_from_dark_purple_to_violet() {
 
 #[test]
 fn gauge_handles_edges() {
-    let empty = btop_gauge(0.0, 3);
+    let empty = btop_gauge(&Theme::default(), 0.0, 3);
     assert!(empty.spans.iter().all(|s| s.content.as_ref() == "▯"));
-    let full = btop_gauge(100.0, 3);
+    let full = btop_gauge(&Theme::default(), 100.0, 3);
     assert!(full.spans.iter().all(|s| s.content.as_ref() == "▮"));
-    let over = btop_gauge(150.0, 3);
+    let over = btop_gauge(&Theme::default(), 150.0, 3);
     assert!(over.spans.iter().all(|s| s.content.as_ref() == "▮"), "переполнение зажато");
 }
