@@ -468,6 +468,54 @@ fn focused_commands_do_not_eat_the_bookmarks() {
 }
 
 #[test]
+fn many_bookmarks_scroll_inside_the_panel() {
+    let tmp = dir();
+    std::fs::write(tmp.path().join("book.md"), paragraphs(60)).expect("файл");
+    let store = qbook::store::Store::open(tmp.path().join("qbook.db")).expect("хранилище");
+    let mut app = App::load(&tmp.path().join("book.md"), "en", &[], Some(store)).expect("загрузка");
+    app.set_size(50, 12);
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    for i in (0..40).rev() {
+        app.set_scroll(i * 2);
+        app.handle_key(key(KeyCode::Char('b')));
+        app.handle_key(key(KeyCode::Enter));
+        app.handle_key(key(KeyCode::Enter));
+    }
+    app.set_scroll(0);
+    app.handle_key(key(KeyCode::Char('B')));
+    for _ in 0..50 {
+        app.handle_key(key(KeyCode::Char('j')));
+    }
+    let last_label = app.bookmarks().last().map(|b| b.label.clone()).expect("закладки есть");
+    let (lines, _) = draw(&mut app, 96, 12);
+    let all = lines.join("\n");
+    assert!(
+        all.contains(&last_label),
+        "последняя закладка ({last_label}) достижима листанием: {all}"
+    );
+}
+
+#[test]
+fn many_headings_scroll_inside_the_toc_panel() {
+    let mut content = String::from("# Глава 0");
+    for i in 1..30 {
+        content.push_str(&format!("\n\n## Глава {i}\n\nАбзац"));
+    }
+    let mut app = app_of(&content);
+    app.set_size(50, 12);
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    app.handle_key(key(KeyCode::Char('o')));
+    for _ in 0..40 {
+        app.handle_key(key(KeyCode::Char('j')));
+    }
+    let (lines, _) = draw(&mut app, 96, 12);
+    let all = lines.join("\n");
+    assert!(all.contains("Глава 29"), "последняя глава достижима листанием: {all}");
+}
+
+#[test]
 fn hidden_bookmarks_leave_commands_alone_in_right_column() {
     let mut app = app_of(&paragraphs(5));
     app.set_size(80, 14);

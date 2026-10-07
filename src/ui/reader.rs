@@ -344,8 +344,8 @@ fn render_right(app: &App, frame: &mut Frame, area: Rect) {
 
     if show_commands && show_bookmarks {
         if focused || area.height >= BOOKMARKS_MIN + 3 {
-            let limit = area.height.saturating_sub(BOOKMARKS_MIN).max(3);
-            let cmds_height = (COMMANDS.len().min(COMMANDS_MAX_ROWS) as u16 + 2).min(limit);
+            let half = area.height / 2;
+            let cmds_height = (COMMANDS.len().min(COMMANDS_MAX_ROWS) as u16 + 2).min(half.max(3));
             let cmds_area = Rect {
                 x: area.x,
                 y: area.y + area.height - cmds_height,
