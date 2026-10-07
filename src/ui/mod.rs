@@ -23,8 +23,8 @@ pub fn note_color(index: u8) -> Color {
     COLORS[usize::from(index).min(COLORS.len() - 1)]
 }
 
-/// btop-градиент прогресса: заполненная часть — от тёмно-красного к яркому
-/// неоново-розовому, пустая — тускло-серые штрихи.
+/// btop-градиент прогресса: заполненная часть — от тёмно-фиолетового к яркому
+/// неоново-сиреневому, пустая — тускло-серые штрихи.
 pub fn btop_gauge(percentage: f32, width: usize) -> Line<'static> {
     let percent = percentage.clamp(0.0, 100.0);
     let filled = ((width as f32) * (percent / 100.0)).round() as usize;
@@ -32,9 +32,9 @@ pub fn btop_gauge(percentage: f32, width: usize) -> Line<'static> {
     for i in 0..width {
         if i < filled {
             let factor = i as f32 / width.max(1) as f32;
-            let r = (90.0 + factor * 165.0) as u8;
-            let g = (40.0 + factor * 30.0) as u8;
-            let b = (50.0 + factor * 60.0) as u8;
+            let r = (90.0 + factor * 120.0) as u8;
+            let g = (30.0 + factor * 60.0) as u8;
+            let b = (140.0 + factor * 115.0) as u8;
             spans.push(Span::styled("▮", ratatui::style::Style::new().fg(Color::Rgb(r, g, b))));
         } else {
             spans.push(Span::styled("▯", ratatui::style::Style::new().fg(Color::Rgb(50, 50, 50))));
