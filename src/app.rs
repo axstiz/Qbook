@@ -589,7 +589,7 @@ impl App {
         } else if self.panel_digit(key) {
             // Цифры 1–4 переключают постоянные btop-колонки из любого фокуса.
         } else if self.reader_global_key(key) {
-            // `q`/`h` работают из любого блока, не только из текста.
+            // `q`/`s`/`h` работают из любого блока, не только из текста.
         } else {
             match self.focus {
                 ReaderFocus::Text => self.handle_reader_key(key),
@@ -600,14 +600,15 @@ impl App {
         }
     }
 
-    /// Клавиши, живущие вне фокуса: выход и полка.
+    /// Клавиши, живущие вне фокуса: выход, полка и справка.
     fn reader_global_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.quit = true;
             }
-            KeyCode::Char('h') => self.go_shelf(),
+            KeyCode::Char('s') => self.go_shelf(),
+            KeyCode::Char('h') => self.help_open = true,
             _ => return false,
         }
         true
@@ -666,7 +667,7 @@ impl App {
             KeyCode::Char('o') => {
                 self.focus_toc();
             }
-            KeyCode::Char('@') => {
+            KeyCode::Char('@') | KeyCode::Char('"') => {
                 self.toggle_toc();
             }
             KeyCode::Char('3') if !shift => {
@@ -678,7 +679,7 @@ impl App {
             KeyCode::Char('B') => {
                 self.focus_bookmarks();
             }
-            KeyCode::Char('#') => {
+            KeyCode::Char('#') | KeyCode::Char('№') => {
                 self.toggle_bookmarks();
             }
             KeyCode::Char('4') if !shift => {
@@ -687,7 +688,7 @@ impl App {
             KeyCode::Char('4') if shift => {
                 self.toggle_commands();
             }
-            KeyCode::Char('$') => {
+            KeyCode::Char('$') | KeyCode::Char(';') => {
                 self.toggle_commands();
             }
             _ => return false,
@@ -979,7 +980,7 @@ impl App {
     }
 
     fn handle_help_key(&mut self, key: KeyEvent) {
-        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h')) {
             self.help_open = false;
         }
         // `q` в справке не выходит из приложения.

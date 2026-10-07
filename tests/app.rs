@@ -404,7 +404,7 @@ fn toc_over_empty_document_is_safe() {
 }
 
 #[test]
-fn help_toggles_with_question_mark_and_esc() {
+fn help_toggles_with_question_mark_h_and_esc() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 3);
     let mut app = load(&base, None);
@@ -414,7 +414,11 @@ fn help_toggles_with_question_mark_and_esc() {
     assert!(app.help_open(), "справка открыта");
     app.handle_key(key(KeyCode::Char('?')));
     assert!(!app.help_open(), "второй ? закрывает");
-    app.handle_key(key(KeyCode::Char('?')));
+    app.handle_key(key(KeyCode::Char('h')));
+    assert!(app.help_open(), "h — аналог ?");
+    app.handle_key(key(KeyCode::Char('h')));
+    assert!(!app.help_open(), "второй h закрывает справку");
+    app.handle_key(key(KeyCode::Char('h')));
     app.handle_key(key(KeyCode::Esc));
     assert!(!app.help_open(), "Esc закрывает справку");
 }
@@ -441,8 +445,13 @@ fn q_and_h_work_from_any_block() {
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('o')));
+    app.handle_key(key(KeyCode::Char('s')));
+    assert_eq!(app.screen(), qbook::app::Screen::Shelf, "s в фокусе глав — на полку");
+
+    let mut app = load(&base, None);
+    app.handle_key(key(KeyCode::Char('o')));
     app.handle_key(key(KeyCode::Char('h')));
-    assert_eq!(app.screen(), qbook::app::Screen::Shelf, "h в фокусе глав — на полку");
+    assert!(app.help_open(), "h в фокусе глав открывает справку");
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('?')));
@@ -503,6 +512,43 @@ fn digits_focus_panels_and_shift_digits_toggle_them() {
         app.toc_visible() && app.bookmarks_visible() && app.commands_visible(),
         "повторный Shift+1 возвращает колонки"
     );
+}
+
+#[test]
+fn shift_panels_work_from_any_block_and_cyrillic_layout() {
+    use qbook::app::ReaderFocus;
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 5);
+    let mut app = load(&base, None);
+    app.set_size(80, 20);
+    let shift = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+
+    app.handle_key(key(KeyCode::Char('2')));
+    assert_eq!(app.focus(), ReaderFocus::Toc, "фокус в главах");
+
+    app.handle_key(key(KeyCode::Char('"')));
+    assert!(!app.toc_visible(), "кириллический Shift+2 (\"\") скрывает главы");
+    app.handle_key(key(KeyCode::Char('"')));
+    assert!(app.toc_visible(), "повторная кавычка возвращает главы");
+
+    app.handle_key(key(KeyCode::Char('№')));
+    assert!(!app.bookmarks_visible(), "кириллический Shift+3 (№) скрывает заметки");
+    app.handle_key(key(KeyCode::Char('№')));
+    assert!(app.bookmarks_visible(), "повторный № возвращает заметки");
+
+    app.handle_key(key(KeyCode::Char(';')));
+    assert!(!app.commands_visible(), "кириллический Shift+4 (;) скрывает команды");
+    app.handle_key(key(KeyCode::Char(';')));
+    assert!(app.commands_visible(), "повторный ; возвращает команды");
+
+    app.handle_key(key(KeyCode::Char('4')));
+    assert_eq!(app.focus(), ReaderFocus::Commands, "фокус в командах");
+    app.handle_key(shift('1'));
+    assert!(
+        !app.toc_visible() && !app.bookmarks_visible() && !app.commands_visible(),
+        "Shift+1 из блока скрывает все колонки"
+    );
+    assert_eq!(app.focus(), ReaderFocus::Text, "фокус уходит к тексту");
 }
 
 #[test]
@@ -653,13 +699,14 @@ fn t_cycles_languages_and_out_of_range_keys_are_ignored() {
 }
 
 #[test]
-fn h_opens_shelf_and_old_l_keys_are_gone() {
+fn s_opens_shelf_and_old_l_keys_are_gone() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 4);
 
     let mut app = load(&base, None);
-    app.handle_key(key(KeyCode::Char('h')));
-    assert_eq!(app.screen(), qbook::app::Screen::Shelf, "h открывает полку");
+    app.handle_key(key(KeyCode::Char('s')));
+    assert_eq!(app.screen(), qbook::app::Screen::Shelf, "s открывает полку");
+    assert!(!app.help_open(), "s не открывает справку");
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('l')));
