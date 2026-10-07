@@ -434,15 +434,16 @@ fn text_wraps_to_the_current_column_width() {
     let mut app = load(&base, None);
     app.set_size(60, 10);
     let shift = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
-    // 60 − левая 24 − прочие 2 = 35 рамка; внутри минус борта (2) и запас (5).
-    assert_eq!(app.layout().width(), 28, "перенос по фактической ширине центра");
+    // 60 − левая 24 − прочие 1 = 35 рамка; внутри минус борта, индент (2),
+    // запас (5).
+    assert_eq!(app.layout().width(), 26, "перенос по фактической ширине центра");
 
     app.handle_key(shift('4'));
     app.handle_key(shift('3'));
-    assert_eq!(app.layout().width(), 28, "левая колонка ещё стоит");
+    assert_eq!(app.layout().width(), 26, "левая колонка ещё стоит");
 
     app.handle_key(shift('2'));
-    assert_eq!(app.layout().width(), 53, "без колонок текст на всю ширину 60−2−5");
+    assert_eq!(app.layout().width(), 51, "без колонок текст на всю ширину 60−2−2−5");
 }
 
 #[test]

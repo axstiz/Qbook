@@ -9,7 +9,9 @@ use ratatui::widgets::{
     Block, BorderType, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::{App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus};
+use crate::app::{
+    App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus, TEXT_INDENT,
+};
 use crate::model::{BlockKind, LineInfo};
 use crate::parse::txt::{list_marker, strip_heading};
 use crate::ui::{btop_gauge, note_color};
@@ -25,6 +27,8 @@ const BAR_WIDE_AT: u16 = 70;
 const PROGRESS_CELLS: usize = 14;
 /// Минимальная высота блока «Заметки» при делении правой колонки.
 const BOOKMARKS_MIN: u16 = 3;
+/// Поля от краёв окна до рамок панелей.
+const WIN_PAD: u16 = 1;
 
 /// Динамическая подсказка бара: клавиши текущего блока жёлтым (как на полке),
 /// описания — тусклые. `t язык` только у текста, у заметок добавлена `h полка`.
@@ -83,7 +87,13 @@ pub fn render(app: &App, frame: &mut Frame) {
     }
     let bar_y = area.y + area.height - 1;
     let slot_y = bar_y - 1;
-    let frame_area = Rect { x: area.x, y: area.y, width: area.width, height: slot_y - area.y };
+    let pad = WIN_PAD;
+    let frame_area = Rect {
+        x: area.x + pad,
+        y: area.y + pad,
+        width: area.width.saturating_sub(2 * pad),
+        height: slot_y.saturating_sub(area.y + pad).saturating_sub(pad),
+    };
     let (left, center, right) = split_columns(
         frame_area,
         app.toc_visible(),
@@ -96,8 +106,8 @@ pub fn render(app: &App, frame: &mut Frame) {
     if let Some(right) = right {
         render_right(app, frame, right);
     }
-    render_slot(app, frame, slot_y, area.width);
-    render_bar(app, frame, area, bar_y);
+    render_slot(app, frame, slot_y, area.x + pad, area.width.saturating_sub(2 * pad));
+    render_bar(app, frame, area.x + pad, area.width.saturating_sub(2 * pad), bar_y);
     if app.help_open() {
         render_help(frame, center);
     }
@@ -152,9 +162,9 @@ fn split_columns(
 
 fn render_text(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     let inner = Rect {
-        x: area.x + 1,
+        x: area.x + 1 + TEXT_INDENT,
         y: area.y + 1,
-        width: area.width.saturating_sub(2),
+        width: area.width.saturating_sub(2).saturating_sub(2 * TEXT_INDENT),
         height: area.height.saturating_sub(2),
     };
     if inner.width == 0 || inner.height == 0 {
@@ -245,6 +255,8 @@ fn title_line(app: &App) -> Line<'static> {
     let block = app.anchor().block + 1;
     let percent = app.percent();
     let mut spans = vec![
+        Span::styled("1", digit_style(app.focus() == ReaderFocus::Text)),
+        Span::raw("  "),
         Span::raw(format!(" {} · ", app.title())),
         Span::styled(langs(app), Style::new().add_modifier(Modifier::BOLD)),
     ];
@@ -269,18 +281,31 @@ fn title_line(app: &App) -> Line<'static> {
 }
 
 /// Рамка в правой колонке со скруглёнными углами и подписанным заголовком.
-/// Неактивный блок приглушается, активный остаётся ярким.
-fn block_frame(title: &str, active: bool) -> Block<'static> {
+/// Неактивный блок приглушается, активный остаётся ярким. В начале заголовка —
+/// цифра панели (btop): активная жёлтая, скрытые панели не рисуются вовсе.
+fn block_frame(digit: &str, title: &str, active: bool) -> Block<'static> {
+    let border = if active { Style::new() } else { Style::new().fg(Color::DarkGray) };
     let title_style = if active {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
         Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM)
     };
-    let border = if active { Style::new() } else { Style::new().fg(Color::DarkGray) };
-    Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(border)
-        .title(Line::from(Span::styled(title.to_string(), title_style)))
+    let mut spans = Vec::new();
+    if !digit.is_empty() {
+        spans.push(Span::styled(digit.to_string(), digit_style(active)));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(title.to_string(), title_style));
+    Block::bordered().border_type(BorderType::Rounded).border_style(border).title(Line::from(spans))
+}
+
+/// Стиль цифры панели на рамке: активная жёлтая, неактивная тусклая.
+fn digit_style(active: bool) -> Style {
+    if active {
+        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+    }
 }
 
 /// Рамка с внутренней областью для одного из блоков среды колонки.
@@ -327,7 +352,7 @@ fn render_toc(app: &App, frame: &mut Frame, area: Rect, active: bool) {
         }
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame(" Главы ", active), area);
+    frame.render_widget(block_frame("2", " Главы ", active), area);
 }
 
 /// Правая колонка: список команд и заметок. Когда видны оба блока, команды
@@ -377,16 +402,17 @@ fn render_bookmarks(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     }
     for (index, bookmark) in bookmarks.iter().enumerate().skip(start).take(rows) {
         let selected = index == app.bookmark_cursor();
+        let marker = if selected { "► " } else { "  " };
         let style = if selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
         lines.push(Line::from(vec![
-            Span::styled("► ", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(marker, Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             Span::styled("● ", Style::new().fg(note_color(bookmark.color))),
             Span::styled(bookmark.label.clone(), style),
             Span::styled(format!(" · {}", format_date(bookmark.created_at)), style),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame(" Заметки ", active), area);
+    frame.render_widget(block_frame("3", " Заметки ", active), area);
 }
 
 /// Список полезных команд: Enter подставляет выбранную в командную строку.
@@ -412,12 +438,12 @@ fn render_commands(app: &App, frame: &mut Frame, area: Rect, active: bool) {
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame(" Команды ", active), area);
+    frame.render_widget(block_frame("4", " Команды ", active), area);
 }
 
 /// Слот над баром: командная строка `:`, ввод метки заметки или тост.
-fn render_slot(app: &App, frame: &mut Frame, y: u16, width: u16) {
-    let slot = Rect { x: 0, y, width, height: 1 };
+fn render_slot(app: &App, frame: &mut Frame, y: u16, x: u16, width: u16) {
+    let slot = Rect { x, y, width, height: 1 };
     let line = if let Some(buffer) = app.typing_buffer() {
         let purpose = app.typing_purpose();
         let label = match purpose {
@@ -453,33 +479,14 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, width: u16) {
     frame.render_widget(Paragraph::new(line.unwrap_or_default()), slot);
 }
 
-/// Клавиатурный бар btop в нижней строке. Цифра подсвечивается жёлтым, когда
-/// соответствующая колонка включена.
-fn render_bar(app: &App, frame: &mut Frame, area: Rect, y: u16) {
-    let bar_area = Rect { x: area.x, y, width: area.width, height: 1 };
-    let wide = area.width >= BAR_WIDE_AT;
-    let mut spans = Vec::new();
-    push_digit(&mut spans, "1", "Текст", app.focus() == ReaderFocus::Text);
-    spans.push(Span::raw(" "));
-    push_digit(&mut spans, "2", "Главы", app.focus() == ReaderFocus::Toc);
-    spans.push(Span::raw(" "));
-    push_digit(&mut spans, "3", "Заметки", app.focus() == ReaderFocus::Bookmarks);
-    spans.push(Span::raw(" "));
-    push_digit(&mut spans, "4", "Команды", app.focus() == ReaderFocus::Commands);
-    if wide {
-        spans.extend(bar_hint(app.focus(), true).spans);
-    }
+/// Клавиатурный бар btop в нижней строке: подсказка цифровых панелей и
+/// клавиши текущего блока. Сами цифры живут в рамках колонок.
+fn render_bar(app: &App, frame: &mut Frame, x: u16, width: u16, y: u16) {
+    let bar_area = Rect { x, y, width, height: 1 };
+    let wide = width >= BAR_WIDE_AT;
+    let mut spans = vec![Span::styled("1–4 — блоки · ", Style::new().add_modifier(Modifier::DIM))];
+    spans.extend(bar_hint(app.focus(), wide).spans);
     frame.render_widget(Paragraph::new(Line::from(spans)), bar_area);
-}
-
-/// Цифра и подпись блока: выбранный тусклым, остальные — яркими.
-fn push_digit<'a>(spans: &mut Vec<Span<'a>>, digit: &'a str, name: &'a str, active: bool) {
-    let style = if active {
-        Style::new().fg(Color::DarkGray)
-    } else {
-        Style::new().add_modifier(Modifier::BOLD)
-    };
-    spans.push(Span::styled(format!("{digit}:{name}"), style));
 }
 
 /// Оверлей справки над слотом, не перекрывая метрики в заголовке центра.
@@ -495,7 +502,7 @@ fn render_help(frame: &mut Frame, center: Rect) {
     let inner =
         Rect { x: area.x + 1, y: area.y + 1, width: width.saturating_sub(2), height: height - 2 };
     frame.render_widget(Paragraph::new(lines), inner);
-    frame.render_widget(block_frame(" Справка ", true), area);
+    frame.render_widget(block_frame("", " Справка ", true), area);
 }
 
 const HELP: &[&str] = &[

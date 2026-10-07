@@ -19,6 +19,8 @@ const DEFAULT_WIDTH: u16 = 80;
 const DEFAULT_HEIGHT: u16 = 24;
 /// Резерв под префиксы блоков (цитаты, стихи) и скроллбар справа.
 pub const TEXT_PAD: u16 = 5;
+/// Внутренний горизонтальный отступ текста от рамки — та же геометрия у рендера.
+pub const TEXT_INDENT: u16 = 1;
 /// Шаг клавиш `[`/`]`: уже/шире колонка, и её минимальная ширина.
 const COL_STEP: i16 = 4;
 const COL_MIN: u16 = 20;
@@ -419,7 +421,7 @@ impl App {
     /// Ширина переноса: текст занимает всю внутреннюю ширину рамки минус
     /// скроллбар и максимальный отступ префиксов; `[`/`]` подстраивают вручную.
     pub fn wrap_width(&self) -> u16 {
-        let inner = self.center_width().saturating_sub(2);
+        let inner = self.center_width().saturating_sub(2).saturating_sub(2 * TEXT_INDENT);
         let max_wrap = inner.saturating_sub(1);
         let low = COL_MIN.min(max_wrap);
         let target = inner.saturating_sub(TEXT_PAD).saturating_add_signed(self.col_extra);
