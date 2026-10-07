@@ -364,3 +364,36 @@ flake.nix
 68. Подсказки бара: клавиши жёлтым (как `key_span` на полке), описания тусклые;
     `t язык` оставлен только у текста, у заметок добавлена `h полка`; выбранная
     команда в меню команд подсвечена жёлтым
+
+### Блок 22 — конфиг-файл, темы и пресеты (план)
+
+69. `Cargo.toml`: `serde` (derive) + `toml`; `src/config.rs`: `ColorSpec`
+    (имена `yellow`/`darkgray` + hex `#rrggbb`, `FromStr` в `ratatui::Color`),
+    `ConfigFile` (serde, все поля `Option`) → мерж поверх пресета; `load()` из
+    `QBOOK_CONFIG` либо `$XDG_CONFIG_HOME/qbook/config.toml`, без файла —
+    дефолт; малформed TOML / невалидный цвет — fail-fast с сообщением
+70. `Theme` (роли: `key`, `accent`, `dim`, `active`, `heading`, `notice`,
+    `selection_bg`, `selection_reverse`, `rule`, `fade`, `gauge_start`,
+    `gauge_end`, `gauge_empty`, `notes[7]`) и `Defaults` (`wheel_lines`,
+    стартовая видимость `toc`/`bookmarks`/`commands`, `column_extra`,
+    `fade_text`); значения по умолчанию равны текущему хардкоду
+71. Пресеты `btop` (дефолт), `mono`, `light` + флаг `--theme <имя>`;
+    приоритет слоёв: дефолт → пресет → конфиг-файл; неизвестное имя — ошибка
+    clap
+72. `app.rs`: поле `config: Config`, доступоры `config()`/`colors()`;
+    конструкторы `load_with`/`load_auto_with`/`shelf_with(.., &Config)`,
+    старые `load`/`load_auto`/`shelf` делегируют `Config::default()` (тесты не
+    трогаем); `WHEEL_LINES`, стартовые `show_*`, `col_extra`, `fade_text` — из
+    `Defaults`
+73. `main.rs`: `config::load()` и прокидывание в конструкторы; `lib.rs`:
+    `pub mod config`
+74. `ui/reader.rs`, `ui/shelf.rs`, `ui/mod.rs`: `btop_gauge(&Theme, …)` и
+    `note_color(&Theme, …)`, `fade_text` управляет градиентом хвоста; ~60
+    хардкод-цветов заменяются на `app.colors().*`
+75. Тесты: `tests/config.rs` (имя/hex/невалидный цвет, частичный файл поверх
+    пресета, `--theme`-валидация) + render-тест с перекрытой темой (ключ бара
+    перекрашен — тема доходит до буфера)
+76. README: раздел «Конфигурация» (путь, `QBOOK_CONFIG`, `--theme`, пример
+    `config.toml`, таблица цветовых ролей) + актуализация раскладки под `s`/`h`
+    и шапку; метрики: `cargo test` / `clippy -D warnings` / `fmt` зелёные,
+    `nix build` собирается
