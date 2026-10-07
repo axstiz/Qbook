@@ -503,6 +503,15 @@ fn walk(node: NodeRef<'_, Node>, sink: &mut Sink) {
                 sink.break_line();
                 continue;
             }
+            // Инлайн-усиление `em`/`i` и `strong`/`b` сохраняется маркерами
+            // markdown — их снимает и красит рендер, как в .txt книгах.
+            if matches!(name, "em" | "i" | "strong" | "b") {
+                let mark = if matches!(name, "strong" | "b") { "**" } else { "*" };
+                sink.push_text(mark);
+                walk(child, sink);
+                sink.push_text(mark);
+                continue;
+            }
             match block_kind(name) {
                 Some(kind) if kind.is_filler() => sink.push_filler(kind),
                 Some(kind) => sink.open_block(kind),
@@ -725,7 +734,16 @@ mod tests {
     fn inline_tags_do_not_split_paragraph() {
         let blocks = extracted(&page(r##"<p>a <em>b</em> c <a href="#fn1">d</a> e</p>"##));
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].text, "a b c d e");
+        assert_eq!(blocks[0].text, "a *b* c d e");
+    }
+
+    #[test]
+    fn em_and_strong_survive_as_inline_markers() {
+        let blocks = extracted(&page(
+            "<p>Обычный <em>курсив</em> и <strong>жирный</strong>, <b>b</b> и <i>i</i>.</p>",
+        ));
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "Обычный *курсив* и **жирный**, **b** и *i*.");
     }
 
     #[test]
