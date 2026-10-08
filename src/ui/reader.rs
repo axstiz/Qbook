@@ -10,7 +10,7 @@ use ratatui::widgets::{
 };
 
 use crate::app::{
-    App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus, ResizeLimit,
+    App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus, ResizeLimit, SearchMode,
     TEXT_INDENT, WIN_PAD,
 };
 use crate::config::Theme;
@@ -262,6 +262,7 @@ fn fade_bottom(frame: &mut Frame, inner: Rect, theme: &Theme) {
 fn render_text_lines(app: &App, frame: &mut Frame, area: Rect, rule_width: u16) {
     let selection = app.selection_range();
     let pick_row = app.pick_row();
+    let search_line = app.search_line();
     let mut rule_rows: Vec<usize> = Vec::new();
     let lines: Vec<Line> = app
         .layout()
@@ -279,6 +280,10 @@ fn render_text_lines(app: &App, frame: &mut Frame, area: Rect, rule_width: u16) 
             let mut line = text_line(app, info);
             if selection.is_some_and(|(top, bottom)| index >= top && index <= bottom) {
                 line.style = Style::new().bg(app.colors().selection_bg);
+            }
+            // Текущее совпадение поиска — переворот строки; pick приоритетнее.
+            if search_line == Some(index) && pick_row != Some(index) {
+                line.style = Style::new().add_modifier(Modifier::REVERSED);
             }
             if pick_row == Some(index) {
                 line.style = Style::new().add_modifier(Modifier::REVERSED);
@@ -622,6 +627,11 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, x: u16, width: u16) {
         let purpose = app.typing_purpose();
         let label = match purpose {
             Some(InputPurpose::Command) => ":",
+            Some(InputPurpose::Search) => match app.search_mode() {
+                SearchMode::Text => "/t:",
+                SearchMode::Bookmarks => "/b:",
+                SearchMode::Toc => "/o:",
+            },
             _ => "Заметка:",
         };
         let mut spans = vec![
@@ -640,6 +650,12 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, x: u16, width: u16) {
             Some(InputPurpose::RenameBookmark) => {
                 spans.push(Span::styled(
                     "  Enter — сохранить · Esc — отмена",
+                    Style::new().add_modifier(Modifier::DIM),
+                ));
+            }
+            Some(InputPurpose::Search) => {
+                spans.push(Span::styled(
+                    "  Tab — режим · Enter — найти · Esc — отмена",
                     Style::new().add_modifier(Modifier::DIM),
                 ));
             }
@@ -696,9 +712,12 @@ const HELP: &[&str] = &[
     "b — закладка на строке",
     "c/C — цвет закладки, D — удалить",
     "n/p — переход по закладкам",
+    "/ — поиск, n/N — следующий/предыдущий",
+    "Tab — режим поиска: текст/заметки/главы",
     "[ — уже колонку, ] — шире",
     ": open <путь> — открыть книгу",
     ": lang t|<код> — язык, : goto <N> — переход",
+    ": theme set <имя> — сменить тему",
     "s — полка",
     "h — справка",
     "Esc — к тексту · q — выход",

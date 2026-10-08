@@ -107,3 +107,74 @@ fn fade_text_switch_controls_bottom_dimming() {
     assert!(with_fade.iter().all(|dim| *dim), "со включённым fade нижняя строка гаснет");
     assert!(without_fade.iter().all(|dim| !*dim), "без fade текст не приглушается");
 }
+
+fn type_command(app: &mut App, text: &str) {
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char(':'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    for c in text.chars() {
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+}
+
+#[test]
+fn theme_command_lists_sets_and_reports_errors() {
+    let dir = dir();
+    let mut app = app_with(&dir.path().join("book.md"), &paragraphs(6), Config::default());
+
+    type_command(&mut app, "theme list");
+    let list = app.notice().expect("тост списка").to_owned();
+    for preset in config::PRESETS {
+        assert!(list.contains(preset), "пресет {preset} в списке: {list}");
+    }
+
+    // Сравниваем с тем же вызовом load: env-файл пользователя, если есть,
+    // применяется одинаково и к команде, и к тесту.
+    let expected = config::load(Some("mono")).expect("mono");
+    type_command(&mut app, "theme set mono");
+    assert_eq!(app.config(), &expected, "theme set mono переключил конфиг");
+    assert!(app.notice().is_some_and(|n| n.contains("mono")), "тост: {:?}", app.notice());
+
+    type_command(&mut app, "theme set neon");
+    assert!(
+        app.notice().is_some_and(|n| n.contains("neon")),
+        "тост ошибки пресета: {:?}",
+        app.notice()
+    );
+    assert_eq!(app.config(), &expected, "ошибка не меняет тему");
+
+    type_command(&mut app, "theme set");
+    assert!(app.notice().is_some_and(|n| n.contains("set")), "помощь по set: {:?}", app.notice());
+
+    type_command(&mut app, "theme");
+    assert!(
+        app.notice().is_some_and(|n| n.contains("list")),
+        "помощь по theme: {:?}",
+        app.notice()
+    );
+}
+
+#[test]
+fn save_round_trips_the_current_config_through_a_file() {
+    let dir = dir();
+    let path = dir.path().join("nested/config.toml");
+    let saved = Config {
+        theme: Theme { key: Color::Cyan, ..Theme::mono() },
+        defaults: qbook::config::Defaults {
+            wheel_lines: 7,
+            fade_text: false,
+            ..Default::default()
+        },
+    };
+    config::save_to(&path, &saved).expect("запись");
+    let loaded = config::load_from(&path, Config::default(), true).expect("чтение");
+    assert_eq!(loaded, saved, "save → load без потерь");
+}

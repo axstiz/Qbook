@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use ratatui::style::Color;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Доступные пресеты: их принимает `--theme`.
 pub const PRESETS: &[&str] = &["btop", "mono", "light"];
@@ -16,10 +16,44 @@ pub enum ConfigError {
     Io { path: PathBuf, source: std::io::Error },
     #[error("{path}: {source}")]
     Toml { path: PathBuf, source: toml::de::Error },
+    #[error("{path}: не удалось записать: {source}")]
+    Write { path: PathBuf, source: std::io::Error },
+    #[error("{path}: не удалось сериализовать: {source}")]
+    Encode { path: PathBuf, source: toml::ser::Error },
     #[error("{path}: неизвестный цвет «{value}» — имя (yellow, darkgray…) или #rrggbb")]
     Color { path: PathBuf, value: String },
     #[error("неизвестный пресет «{0}»: доступны btop, mono, light")]
     Preset(String),
+    #[error("путь к конфигу не задан ($XDG_CONFIG_HOME)")]
+    NoPath,
+}
+
+/// Обратное преобразование цвета: имя для именованной палитры, hex для RGB.
+fn color_str(color: &Color) -> String {
+    let named = match color {
+        Color::Black => "black",
+        Color::Red => "red",
+        Color::Green => "green",
+        Color::Yellow => "yellow",
+        Color::Blue => "blue",
+        Color::Magenta => "magenta",
+        Color::Cyan => "cyan",
+        Color::White => "white",
+        Color::Gray => "gray",
+        Color::DarkGray => "darkgray",
+        Color::LightRed => "lightred",
+        Color::LightGreen => "lightgreen",
+        Color::LightYellow => "lightyellow",
+        Color::LightBlue => "lightblue",
+        Color::LightMagenta => "lightmagenta",
+        Color::LightCyan => "lightcyan",
+        Color::Reset => "reset",
+        _ => {
+            let (r, g, b) = to_rgb(*color);
+            return format!("#{r:02x}{g:02x}{b:02x}");
+        }
+    };
+    named.to_owned()
 }
 
 /// Имя цвета или hex-код в конфиге: `yellow`, `darkgrey`, `#rrggbb`, `#rgb`.
@@ -210,7 +244,7 @@ fn to_rgb(color: Color) -> (u8, u8, u8) {
 }
 
 /// Стартовые значения поведения: панели, шаг колеса, ширина колонки, градиент.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Defaults {
     /// Строк на прокрутку колесом мыши.
     pub wheel_lines: isize,
@@ -278,6 +312,52 @@ struct DefaultsPatch {
     commands: Option<bool>,
     column_extra: Option<i16>,
     fade_text: Option<bool>,
+}
+
+/// Полная запись конфига для `save()`: все поля, цвета строками.
+#[derive(Serialize)]
+struct ConfigOut {
+    theme: ThemeOut,
+    defaults: Defaults,
+}
+
+#[derive(Serialize)]
+struct ThemeOut {
+    key: String,
+    accent: String,
+    dim: String,
+    active: String,
+    heading: String,
+    notice: String,
+    selection_bg: String,
+    rule: String,
+    gauge_start: String,
+    gauge_end: String,
+    gauge_empty: String,
+    notes: Vec<String>,
+}
+
+impl From<&Config> for ConfigOut {
+    fn from(config: &Config) -> Self {
+        let theme = &config.theme;
+        Self {
+            theme: ThemeOut {
+                key: color_str(&theme.key),
+                accent: color_str(&theme.accent),
+                dim: color_str(&theme.dim),
+                active: color_str(&theme.active),
+                heading: color_str(&theme.heading),
+                notice: color_str(&theme.notice),
+                selection_bg: color_str(&theme.selection_bg),
+                rule: color_str(&theme.rule),
+                gauge_start: color_str(&theme.gauge_start),
+                gauge_end: color_str(&theme.gauge_end),
+                gauge_empty: color_str(&theme.gauge_empty),
+                notes: theme.notes.iter().map(color_str).collect(),
+            },
+            defaults: config.defaults.clone(),
+        }
+    }
 }
 
 impl ConfigFile {
@@ -358,6 +438,28 @@ impl ConfigFile {
         }
         Ok(config)
     }
+}
+
+/// Записать текущую конфигурацию в файл (`:theme save`). Все поля
+/// сериализуются целиком, чтобы файл читался без базового пресета.
+pub fn save(config: &Config) -> Result<PathBuf, ConfigError> {
+    let path = path().ok_or(ConfigError::NoPath)?;
+    save_to(&path, config)?;
+    Ok(path)
+}
+
+/// Записать конфигурацию в явный путь, создавая каталог при необходимости.
+pub fn save_to(path: &Path, config: &Config) -> Result<(), ConfigError> {
+    let file = ConfigOut::from(config);
+    let text = toml::to_string_pretty(&file)
+        .map_err(|source| ConfigError::Encode { path: path.to_owned(), source })?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|source| ConfigError::Write { path: path.to_owned(), source })?;
+    }
+    std::fs::write(path, text)
+        .map_err(|source| ConfigError::Write { path: path.to_owned(), source })?;
+    Ok(())
 }
 
 /// Тема пресета; неизвестное имя — ошибка.

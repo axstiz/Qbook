@@ -57,6 +57,8 @@ pub enum InputPurpose {
     NewBookmark,
     /// Командная строка ex-команд (клавиша `:` или панель «Команды»).
     Command,
+    /// Поиск по тексту/закладкам/оглавлению.
+    Search,
 }
 
 /// Предел ручного изменения колонки (`[`/`]`) — колонка не сдвинулась.
@@ -64,6 +66,31 @@ pub enum InputPurpose {
 pub enum ResizeLimit {
     Narrow,
     Wide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    Text,
+    Bookmarks,
+    Toc,
+}
+
+#[derive(Debug, Clone)]
+pub enum SearchHit {
+    Text {
+        layout_index: usize,
+        block: usize,
+        line_in_block: usize,
+        start_char: usize,
+        end_char: usize,
+    },
+    Bookmark {
+        bookmark_id: i64,
+        index_in_list: usize,
+    },
+    Toc {
+        toc_index: usize,
+    },
 }
 
 /// Какой блок получает клавиши в трёхколоночной btop-оболочке.
@@ -96,6 +123,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("panels", "", "только текст ⇄ все колонки"),
     ("wider", "", "шире колонку"),
     ("narrower", "", "уже колонку"),
+    ("theme", "list|set|save", "темы: список / смена / запись"),
     ("help", "", "справка по клавишам"),
     ("shelf", "", "полка"),
     ("b", "", "закладка здесь"),
@@ -183,6 +211,12 @@ pub struct App {
     clipboard_out: Option<String>,
     /// Цвета и настройки по умолчанию из конфига.
     config: Config,
+    // Поиск
+    search_active: bool,
+    search_query: String,
+    search_mode: SearchMode,
+    search_hits: Vec<SearchHit>,
+    search_index: usize,
 }
 
 /// Режим курсора над строками текста.
@@ -355,6 +389,11 @@ impl App {
             notice: None,
             notice_left: 0,
             config,
+            search_active: false,
+            search_query: String::new(),
+            search_mode: SearchMode::Text,
+            search_hits: Vec::new(),
+            search_index: 0,
         };
         app.reload_bookmarks();
         Ok(app)
@@ -408,6 +447,11 @@ impl App {
             notice: None,
             notice_left: 0,
             config,
+            search_active: false,
+            search_query: String::new(),
+            search_mode: SearchMode::Text,
+            search_hits: Vec::new(),
+            search_index: 0,
         };
         app.reload_shelf();
         Ok(app)
@@ -683,7 +727,7 @@ impl App {
         }
     }
 
-    /// Клавиши, живущие вне фокуса: выход, полка и справка.
+    /// Клавиши, живущие вне фокуса: выход, полка, справка и поиск.
     fn reader_global_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
@@ -692,6 +736,10 @@ impl App {
             }
             KeyCode::Char('s') => self.go_shelf(),
             KeyCode::Char('h') => self.help_open = true,
+            KeyCode::Char('/') => self.start_search(),
+            KeyCode::Esc if self.search_active => self.close_search(),
+            KeyCode::Char('n') if self.search_active => self.search_step(true),
+            KeyCode::Char('N') if self.search_active => self.search_step(false),
             _ => return false,
         }
         true
@@ -1158,10 +1206,24 @@ impl App {
     }
 
     fn handle_typing(&mut self, key: KeyEvent) {
+        let in_search = matches!(self.typing, Some(Typing { purpose: InputPurpose::Search, .. }));
         match key.code {
             KeyCode::Esc => {
+                if in_search {
+                    self.close_search();
+                }
                 self.typing = None;
                 self.shelf_error = None;
+            }
+            // В поиске Tab переключает режим: текст → закладки → главы.
+            KeyCode::Tab if in_search => {
+                self.search_mode = match self.search_mode {
+                    SearchMode::Text => SearchMode::Bookmarks,
+                    SearchMode::Bookmarks => SearchMode::Toc,
+                    SearchMode::Toc => SearchMode::Text,
+                };
+                self.search_hits.clear();
+                self.search_index = 0;
             }
             KeyCode::Enter => self.commit_typing(),
             KeyCode::Backspace => {
@@ -1250,6 +1312,10 @@ impl App {
                     self.set_notice(message);
                 }
             }
+            InputPurpose::Search => {
+                self.run_search(typing.buffer.trim());
+                self.typing = None;
+            }
         }
     }
 
@@ -1298,7 +1364,161 @@ impl App {
                 self.help_open = true;
                 Some(": справка".to_owned())
             }
+            "theme" => self.command_theme(arg),
             other => Some(format!(": нет команды «{other}»")),
+        }
+    }
+
+    /// Открыть поиск по `/`: строка запроса в слоте, режим Text.
+    fn start_search(&mut self) {
+        self.search_active = true;
+        self.search_query.clear();
+        self.search_hits.clear();
+        self.search_index = 0;
+        self.typing = Some(Typing {
+            purpose: InputPurpose::Search,
+            buffer: String::new(),
+            bookmark_id: None,
+            anchor: None,
+            color: 0,
+        });
+    }
+
+    /// Закрыть поиск: подсветка и результаты гаснут.
+    fn close_search(&mut self) {
+        self.search_active = false;
+        self.search_query.clear();
+        self.search_hits.clear();
+        self.search_index = 0;
+    }
+
+    /// Выполнить поиск: собрать совпадения по текущему режиму и перейти
+    /// к первому. Пустой результат — тост, активный режим остаётся.
+    fn run_search(&mut self, query: &str) {
+        if query.is_empty() {
+            self.search_hits.clear();
+            self.search_index = 0;
+            self.search_active = true;
+            self.set_notice(": пустой запрос".to_owned());
+            return;
+        }
+        self.search_query = query.to_owned();
+        self.search_active = true;
+        let needle = query.to_lowercase();
+        self.search_hits.clear();
+        match self.search_mode {
+            SearchMode::Text => {
+                let doc = self.document().clone();
+                let layout = self.layout.clone();
+                for (index, info) in layout.lines().iter().enumerate() {
+                    let Some(block) = doc.block(info.block) else { continue };
+                    let slice = info.slice(block);
+                    let Some(offset) = slice.to_lowercase().find(&needle) else { continue };
+                    let start_char = slice[..offset].chars().count();
+                    let end_char =
+                        start_char + slice[offset..].chars().count().min(needle.chars().count());
+                    self.search_hits.push(SearchHit::Text {
+                        layout_index: index,
+                        block: info.block,
+                        line_in_block: info.line_in_block,
+                        start_char,
+                        end_char,
+                    });
+                }
+            }
+            SearchMode::Bookmarks => {
+                for (index, bookmark) in self.bookmarks.iter().enumerate() {
+                    if bookmark.label.to_lowercase().contains(&needle) {
+                        self.search_hits.push(SearchHit::Bookmark {
+                            bookmark_id: bookmark.id,
+                            index_in_list: index,
+                        });
+                    }
+                }
+            }
+            SearchMode::Toc => {
+                let titles: Vec<String> =
+                    self.document().toc().iter().map(|item| item.title.clone()).collect();
+                for (index, title) in titles.iter().enumerate() {
+                    if title.to_lowercase().contains(&needle) {
+                        self.search_hits.push(SearchHit::Toc { toc_index: index });
+                    }
+                }
+            }
+        }
+        if self.search_hits.is_empty() {
+            self.set_notice(format!(": не найдено «{query}»"));
+            return;
+        }
+        // Первый результат: после текущей позиции, иначе — wrap с начала.
+        self.search_index = match self.search_mode {
+            SearchMode::Text => self
+                .search_hits
+                .iter()
+                .position(|hit| matches!(hit, SearchHit::Text { layout_index, .. } if *layout_index > self.scroll))
+                .unwrap_or(0),
+            _ => 0,
+        };
+        self.goto_search_hit();
+    }
+
+    /// `n`/`N`: следующий/предыдущий результат с зацикливанием.
+    fn search_step(&mut self, forward: bool) {
+        if self.search_hits.is_empty() {
+            return;
+        }
+        let last = self.search_hits.len() - 1;
+        if forward {
+            self.search_index = if self.search_index >= last { 0 } else { self.search_index + 1 };
+        } else {
+            self.search_index = if self.search_index == 0 { last } else { self.search_index - 1 };
+        }
+        self.goto_search_hit();
+    }
+
+    /// Перейти к текущему результату: текст — центрируем строку вьюпортом,
+    /// закладки и главы — штатным переходом по якорю.
+    fn goto_search_hit(&mut self) {
+        let Some(hit) = self.search_hits.get(self.search_index).cloned() else { return };
+        match hit {
+            SearchHit::Text { layout_index, .. } => {
+                let viewport = self.viewport_height();
+                let target = layout_index.saturating_sub(viewport / 2);
+                self.set_scroll(target);
+            }
+            SearchHit::Bookmark { index_in_list, .. } => {
+                if let Some(bookmark) = self.bookmarks.get(index_in_list).cloned() {
+                    self.goto_anchor(bookmark.anchor);
+                }
+            }
+            SearchHit::Toc { toc_index } => {
+                if let Some(item) = self.document().toc().get(toc_index).cloned() {
+                    let base = self.translate(Anchor::at_block(item.block), 0);
+                    self.goto_anchor(base);
+                }
+            }
+        }
+    }
+
+    /// Активен ли поиск — рендер подсвечивает текущее совпадение.
+    pub fn search_active(&self) -> bool {
+        self.search_active
+    }
+
+    /// Текущий режим поиска — префикс в слоте (`/t:`, `/b:`, `/o:`).
+    pub fn search_mode(&self) -> SearchMode {
+        self.search_mode
+    }
+
+    /// Строка раскладки текущего совпадения (для подсветки) — `None`, если
+    /// текущий результат не из текста.
+    pub fn search_line(&self) -> Option<usize> {
+        if !self.search_active {
+            return None;
+        }
+        match self.search_hits.get(self.search_index) {
+            Some(SearchHit::Text { layout_index, .. }) => Some(*layout_index),
+            _ => None,
         }
     }
 
@@ -1317,6 +1537,31 @@ impl App {
             }
         } else {
             Some(format!(": нет языка «{arg}»"))
+        }
+    }
+
+    /// `:theme list|set <имя>|save` — просмотр, смена и запись текущей темы.
+    fn command_theme(&mut self, arg: &str) -> Option<String> {
+        let (action, name) = arg.split_once(' ').map_or((arg, ""), |(a, b)| (a, b.trim()));
+        match action {
+            "list" => Some(format!(": темы · {}", crate::config::PRESETS.join(", "))),
+            "set" => {
+                if name.is_empty() {
+                    return Some(": theme set нужен пресет: btop, mono, light".to_owned());
+                }
+                match crate::config::load(Some(name)) {
+                    Ok(config) => {
+                        self.config = config;
+                        Some(format!(": тема «{name}»"))
+                    }
+                    Err(error) => Some(format!(": {error}")),
+                }
+            }
+            "save" => match crate::config::save(&self.config) {
+                Ok(path) => Some(format!(": конфиг записан — {}", path.display())),
+                Err(error) => Some(format!(": {error}")),
+            },
+            _ => Some(": нужен list, set <имя> или save".to_owned()),
         }
     }
 
@@ -1441,6 +1686,7 @@ impl App {
         self.screen = Screen::Shelf;
         self.typing = None;
         self.shelf_error = None;
+        self.close_search();
         self.bookmarks.clear();
         self.reload_shelf();
     }
