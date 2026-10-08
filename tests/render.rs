@@ -812,3 +812,64 @@ fn rule_renders_as_a_full_width_dividing_line() {
     assert_ne!(below, "─", "под линией начинается текст, а не вторая линия");
     assert_ne!(below, " ", "под линией нет пустой строки");
 }
+
+#[test]
+fn search_panel_shows_live_results_until_esc() {
+    let key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    let mut app = app_of(&paragraphs(30));
+    app.set_size(110, 14);
+
+    app.handle_key(key('/'));
+    for c in "абзац".chars() {
+        app.handle_key(key(c));
+    }
+    let (lines_before, _) = screen(&mut app, 110, 14);
+    let title = lines_before.iter().find(|l| l.contains("Результаты")).expect("панель результатов");
+    assert_eq!(title.matches('·').count(), 1, "счётчик в шапке панели: {title}");
+    assert!(
+        lines_before.iter().any(|l| l.contains('►') && l.contains("Абзац")),
+        "курсор-строка с совпадением в правой колонке"
+    );
+
+    app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let (lines_after, _) = screen(&mut app, 110, 14);
+    assert!(!lines_after.iter().any(|l| l.contains("Результаты")), "панель исчезла после Esc");
+}
+
+#[test]
+fn search_panel_hints_empty_query_and_no_matches() {
+    let key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    let mut app = app_of(&paragraphs(5));
+    app.set_size(110, 14);
+
+    app.handle_key(key('/'));
+    let (lines, _) = screen(&mut app, 110, 14);
+    assert!(lines.iter().any(|l| l.contains("Введите запрос")), "подсказка пустого запроса");
+
+    for c in "ззз".chars() {
+        app.handle_key(key(c));
+    }
+    let (lines, _) = screen(&mut app, 110, 14);
+    assert!(lines.iter().any(|l| l.contains("Не найдено")), "подсказка «Не найдено»");
+}
+
+#[test]
+fn bar_hints_next_navigation_after_enter() {
+    let key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    let mut app = app_of(&paragraphs(10));
+    app.set_size(110, 14);
+
+    app.handle_key(key('/'));
+    for c in "абзац".chars() {
+        app.handle_key(key(c));
+    }
+    app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Text, "фокус у текста");
+
+    let (lines, _) = screen(&mut app, 110, 14);
+    let bar = lines.last().expect("бар");
+    assert!(bar.contains("n/N"), "бар подсказывает листать n/N: {bar}");
+    assert!(bar.contains("закрыть поиск"), "бар подсказывает Esc-закрытие: {bar}");
+    assert!(!bar.contains("j/k"), "бар не про панель результатов: {bar}");
+}

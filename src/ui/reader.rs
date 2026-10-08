@@ -37,6 +37,11 @@ fn bar_hint(app: &App, wide: bool) -> Line<'static> {
     let focus = app.focus();
     let colors = app.colors();
     let pairs: &[(&str, &str)] = match (focus, wide) {
+        // Пока поиск активен, после Enter (фокус у текста) бар напоминает,
+        // как листать результаты и как окончательно закрыть поиск.
+        (ReaderFocus::Text, true) if app.search_active() => {
+            &[("n/N", "дальше/назад"), ("Esc", "— закрыть поиск"), ("s", "полка"), ("q", "выход")]
+        }
         (ReaderFocus::Text, true) => &[
             ("b", "заметка"),
             ("v", "выд"),
@@ -59,12 +64,17 @@ fn bar_hint(app: &App, wide: bool) -> Line<'static> {
         (ReaderFocus::Commands, true) => {
             &[("j/k", ""), ("Enter", "— подставить"), ("s", "полка"), ("q", "выход")]
         }
+        (ReaderFocus::SearchResults, true) => {
+            &[("j/k", ""), ("Enter", "— к тексту"), ("Esc", "закрыть поиск"), ("q", "выход")]
+        }
+        (ReaderFocus::Text, false) if app.search_active() => &[("n/N", ""), ("Esc", ""), ("q", "")],
         (ReaderFocus::Text, false) => {
             &[("b", ""), ("v", ""), ("t", ""), ("s", ""), ("h", ""), ("q", "")]
         }
         (ReaderFocus::Toc, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
         (ReaderFocus::Bookmarks, false) => &[("j", ""), ("k", ""), ("c", ""), ("D", ""), ("q", "")],
         (ReaderFocus::Commands, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
+        (ReaderFocus::SearchResults, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
     };
     let sep = if wide { " · " } else { " " };
     let mut spans = Vec::new();
@@ -110,11 +120,8 @@ pub fn render(app: &App, frame: &mut Frame) {
         width: header_width,
         height: slot_y.saturating_sub(area.y + pad + 1).saturating_sub(pad),
     };
-    let (left, center, right) = split_columns(
-        frame_area,
-        app.toc_visible(),
-        app.bookmarks_visible() || app.commands_visible(),
-    );
+    let (left, center, right) =
+        split_columns(frame_area, app.toc_visible(), app.right_column_visible());
     render_text(app, frame, center, app.focus() == ReaderFocus::Text);
     if let Some(left) = left {
         render_toc(app, frame, left, app.focus() == ReaderFocus::Toc);
@@ -526,12 +533,16 @@ fn render_toc(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     frame.render_widget(block_frame(colors, "2", Line::raw(" Главы "), active), area);
 }
 
-/// Правая колонка: список команд и заметок. Когда видны оба блока, команды
-/// снизу, над ними заметки; при нехватке места команды прячутся сами
-/// (минимум BOOKMARKS_MIN строк заметок) и даже в фокусе не съедают колонку.
-/// Если какой-то блок скрыт — другой занимает колонку целиком.
+/// Правая колонка: пока активен поиск — живой список совпадений, иначе
+/// список команд и заметок. Когда видны оба блока, команды снизу, над ними
+/// заметки; при нехватке места команды прячутся сами (минимум BOOKMARKS_MIN
+/// строк заметок) и даже в фокусе не съедают колонку.
 fn render_right(app: &App, frame: &mut Frame, area: Rect) {
     if area.height == 0 || area.width == 0 {
+        return;
+    }
+    if app.search_active() {
+        render_search_results(app, frame, area);
         return;
     }
     let focused = app.focus() == ReaderFocus::Commands;
@@ -620,6 +631,54 @@ fn render_commands(app: &App, frame: &mut Frame, area: Rect, active: bool) {
     frame.render_widget(block_frame(colors, "4", Line::raw(" Команды "), active), area);
 }
 
+/// Живой список совпадений поиска: растёт при наборе, курсор `►` едет с
+/// `↑/↓`, окно прокручивается за курсором как в оглавлении.
+fn render_search_results(app: &App, frame: &mut Frame, area: Rect) {
+    let inner = inner_of(area);
+    let colors = app.colors();
+    let count = app.search_count();
+    let rows = inner.height as usize;
+    let cursor = app.search_cursor().min(count.saturating_sub(1));
+    let start = cursor.saturating_sub(rows.saturating_sub(1));
+    let mut lines: Vec<Line> = Vec::new();
+    if count == 0 {
+        let empty = if app.search_query().is_empty() {
+            "Введите запрос"
+        } else {
+            "Не найдено"
+        };
+        lines.push(Line::from(Span::styled(empty, Style::new().add_modifier(Modifier::DIM))));
+    }
+    for index in start..count.min(start + rows) {
+        let selected = index == cursor;
+        let marker = if selected { "►" } else { " " };
+        let style = if selected {
+            Style::new().add_modifier(Modifier::BOLD)
+        } else if app.focus() == ReaderFocus::SearchResults {
+            Style::new()
+        } else {
+            Style::new().fg(colors.dim)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::new().fg(colors.key).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled(app.search_row_label(index).unwrap_or_default(), style),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+    let title = Line::from(vec![
+        Span::raw(" Результаты "),
+        Span::styled(
+            format!("· {count} "),
+            Style::new().fg(colors.key).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    frame.render_widget(
+        block_frame(colors, "3/4", title, app.focus() == ReaderFocus::SearchResults),
+        area,
+    );
+}
+
 /// Слот над баром: командная строка `:`, ввод метки заметки или тост.
 fn render_slot(app: &App, frame: &mut Frame, y: u16, x: u16, width: u16) {
     let slot = Rect { x, y, width, height: 1 };
@@ -655,7 +714,7 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, x: u16, width: u16) {
             }
             Some(InputPurpose::Search) => {
                 spans.push(Span::styled(
-                    "  Tab — режим · Enter — найти · Esc — отмена",
+                    "  ↑/↓ — список · Tab — режим · Enter — прыжок · Esc — отмена",
                     Style::new().add_modifier(Modifier::DIM),
                 ));
             }
@@ -714,6 +773,7 @@ const HELP: &[&str] = &[
     "n/p — переход по закладкам",
     "/ — поиск, n/N — следующий/предыдущий",
     "Tab — режим поиска: текст/заметки/главы",
+    "↑/↓ в поиске — список совпадений, Enter — прыжок, Esc — закрыть",
     "[ — уже колонку, ] — шире",
     ": open <путь> — открыть книгу",
     ": lang t|<код> — язык, : goto <N> — переход",

@@ -104,6 +104,8 @@ pub enum ReaderFocus {
     Bookmarks,
     /// Правая колонка, список команд.
     Commands,
+    /// Правая колонка, живой список результатов поиска.
+    SearchResults,
 }
 
 /// Минимальная высота для полной btop-оболочки; ниже — компактный рендер
@@ -511,6 +513,11 @@ impl App {
         self.show_commands
     }
 
+    /// Правая колонка нужна для заметок, команд или живого списка поиска.
+    pub fn right_column_visible(&self) -> bool {
+        self.show_bookmarks || self.show_commands || self.search_active
+    }
+
     pub fn focus(&self) -> ReaderFocus {
         self.focus
     }
@@ -531,7 +538,7 @@ impl App {
     /// колонки раскладываются внутри поля `WIN_PAD`, а не по краям окна.
     fn center_width(&self) -> u16 {
         let full = self.width.saturating_sub(2 * WIN_PAD);
-        let right = self.bookmarks_visible() || self.commands_visible();
+        let right = self.right_column_visible();
         if self.toc_visible() && right && full >= LEFT_W + RIGHT_W + 2 + MIN_CENTER {
             full - LEFT_W - RIGHT_W - 2
         } else if self.toc_visible() && full >= LEFT_W + 1 + MIN_CENTER {
@@ -723,6 +730,7 @@ impl App {
                 ReaderFocus::Toc => self.handle_toc_key(key),
                 ReaderFocus::Bookmarks => self.handle_bookmarks_key(key),
                 ReaderFocus::Commands => self.handle_commands_key(key),
+                ReaderFocus::SearchResults => self.handle_search_results_key(key),
             }
         }
     }
@@ -737,6 +745,10 @@ impl App {
             KeyCode::Char('s') => self.go_shelf(),
             KeyCode::Char('h') => self.help_open = true,
             KeyCode::Char('/') => self.start_search(),
+            // Двухступенчатый выход из поиска: панель → текст → закрыть.
+            KeyCode::Esc if self.focus == ReaderFocus::SearchResults => {
+                self.focus = ReaderFocus::Text;
+            }
             KeyCode::Esc if self.search_active => self.close_search(),
             KeyCode::Char('n') if self.search_active => self.search_step(true),
             KeyCode::Char('N') if self.search_active => self.search_step(false),
@@ -804,22 +816,22 @@ impl App {
             KeyCode::Char('3') if !shift => {
                 self.focus_bookmarks();
             }
-            KeyCode::Char('3') if shift => {
+            KeyCode::Char('3') if shift && !self.search_active => {
                 self.toggle_bookmarks();
             }
             KeyCode::Char('B') => {
                 self.focus_bookmarks();
             }
-            KeyCode::Char('#') | KeyCode::Char('№') => {
+            KeyCode::Char('#') | KeyCode::Char('№') if !self.search_active => {
                 self.toggle_bookmarks();
             }
             KeyCode::Char('4') if !shift => {
                 self.focus_commands();
             }
-            KeyCode::Char('4') if shift => {
+            KeyCode::Char('4') if shift && !self.search_active => {
                 self.toggle_commands();
             }
-            KeyCode::Char('$') | KeyCode::Char(';') => {
+            KeyCode::Char('$') | KeyCode::Char(';') if !self.search_active => {
                 self.toggle_commands();
             }
             _ => return false,
@@ -878,8 +890,13 @@ impl App {
         self.reflow();
     }
 
-    /// Shift+3: показать заметки и встать в список.
+    /// Shift+3: показать заметки и встать в список. Пока идёт поиск —
+    /// правая колонка занята результатами, фокус уходит в них.
     fn focus_bookmarks(&mut self) {
+        if self.search_active {
+            self.focus = ReaderFocus::SearchResults;
+            return;
+        }
         let shown = self.show_bookmarks;
         self.show_bookmarks = true;
         self.reload_bookmarks();
@@ -899,8 +916,13 @@ impl App {
         self.reflow();
     }
 
-    /// Shift+4: показать команды и встать в список.
+    /// Shift+4: показать команды и встать в список. При активном поиске —
+    /// фокус в результаты (колонка одна).
     fn focus_commands(&mut self) {
+        if self.search_active {
+            self.focus = ReaderFocus::SearchResults;
+            return;
+        }
         let shown = self.show_commands;
         self.show_commands = true;
         self.focus = ReaderFocus::Commands;
@@ -1205,6 +1227,17 @@ impl App {
         }
     }
 
+    /// Панель результатов поиска: `j`/`k` шагают курсором с живым прыжком,
+    /// `Enter` — к тексту (панель остаётся); `n`/`N`/`Esc` — в global_key.
+    fn handle_search_results_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.move_search_cursor(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_search_cursor(-1),
+            KeyCode::Enter => self.focus = ReaderFocus::Text,
+            _ => {}
+        }
+    }
+
     fn handle_typing(&mut self, key: KeyEvent) {
         let in_search = matches!(self.typing, Some(Typing { purpose: InputPurpose::Search, .. }));
         match key.code {
@@ -1215,20 +1248,27 @@ impl App {
                 self.typing = None;
                 self.shelf_error = None;
             }
-            // В поиске Tab переключает режим: текст → закладки → главы.
+            // В поиске Tab переключает режим: текст → закладки → главы;
+            // список результатов пересчитывается на лету.
             KeyCode::Tab if in_search => {
                 self.search_mode = match self.search_mode {
                     SearchMode::Text => SearchMode::Bookmarks,
                     SearchMode::Bookmarks => SearchMode::Toc,
                     SearchMode::Toc => SearchMode::Text,
                 };
-                self.search_hits.clear();
-                self.search_index = 0;
+                self.refresh_search();
             }
+            // `↑`/`↓` в строке запроса ходят по живому списку совпадений.
+            KeyCode::Down if in_search => self.move_search_cursor(1),
+            KeyCode::Up if in_search => self.move_search_cursor(-1),
+            KeyCode::Enter if in_search => self.commit_search(),
             KeyCode::Enter => self.commit_typing(),
             KeyCode::Backspace => {
                 if let Some(t) = &mut self.typing {
                     t.buffer.pop();
+                }
+                if in_search {
+                    self.refresh_search();
                 }
             }
             // В окне создания заметки `c`/`C` выбирают цвет, а не набираются.
@@ -1244,6 +1284,9 @@ impl App {
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(t) = &mut self.typing {
                     t.buffer.push(c);
+                }
+                if in_search {
+                    self.refresh_search();
                 }
             }
             _ => {}
@@ -1312,9 +1355,11 @@ impl App {
                     self.set_notice(message);
                 }
             }
+            // Enter в поиске уходит в commit_search раньше; ветка — для
+            // полноты match (typing уже take()нут).
             InputPurpose::Search => {
-                self.run_search(typing.buffer.trim());
-                self.typing = None;
+                self.typing = Some(typing);
+                self.commit_search();
             }
         }
     }
@@ -1384,28 +1429,29 @@ impl App {
         });
     }
 
-    /// Закрыть поиск: подсветка и результаты гаснут.
+    /// Закрыть поиск: подсветка, панель и результаты гаснут.
     fn close_search(&mut self) {
         self.search_active = false;
         self.search_query.clear();
         self.search_hits.clear();
         self.search_index = 0;
+        if self.focus == ReaderFocus::SearchResults {
+            self.focus = ReaderFocus::Text;
+        }
     }
 
-    /// Выполнить поиск: собрать совпадения по текущему режиму и перейти
-    /// к первому. Пустой результат — тост, активный режим остаётся.
-    fn run_search(&mut self, query: &str) {
+    /// Живой фильтр: пересобрать совпадения по текущему буферу и режиму,
+    /// не прыгая и не тостя. Курсор — первое совпадение после текущей
+    /// позиции (Text), иначе начало списка.
+    fn refresh_search(&mut self) {
+        let query = self.typing_buffer().unwrap_or_default().to_owned();
+        self.search_query = query.clone();
+        self.search_hits.clear();
+        self.search_index = 0;
         if query.is_empty() {
-            self.search_hits.clear();
-            self.search_index = 0;
-            self.search_active = true;
-            self.set_notice(": пустой запрос".to_owned());
             return;
         }
-        self.search_query = query.to_owned();
-        self.search_active = true;
         let needle = query.to_lowercase();
-        self.search_hits.clear();
         match self.search_mode {
             SearchMode::Text => {
                 let doc = self.document().clone();
@@ -1425,6 +1471,11 @@ impl App {
                         end_char,
                     });
                 }
+                self.search_index = self
+                    .search_hits
+                    .iter()
+                    .position(|hit| matches!(hit, SearchHit::Text { layout_index, .. } if *layout_index > self.scroll))
+                    .unwrap_or(0);
             }
             SearchMode::Bookmarks => {
                 for (index, bookmark) in self.bookmarks.iter().enumerate() {
@@ -1446,34 +1497,38 @@ impl App {
                 }
             }
         }
-        if self.search_hits.is_empty() {
+    }
+
+    /// `Enter` в строке поиска: прыжок к курсору списка, prompt закрывается,
+    /// панель результатов и подсветка остаются.
+    fn commit_search(&mut self) {
+        let query = self.search_query.clone();
+        if query.is_empty() {
+            self.set_notice(": пустой запрос".to_owned());
+        } else if self.search_hits.is_empty() {
             self.set_notice(format!(": не найдено «{query}»"));
+        } else {
+            self.goto_search_hit();
+        }
+        self.typing = None;
+        self.focus = ReaderFocus::Text;
+    }
+
+    /// `↑`/`↓` в строке поиска и в панели: шаг курсора с зацикливанием
+    /// и живым прыжком текста к совпадению.
+    fn move_search_cursor(&mut self, delta: i32) {
+        let len = self.search_hits.len();
+        if len == 0 {
             return;
         }
-        // Первый результат: после текущей позиции, иначе — wrap с начала.
-        self.search_index = match self.search_mode {
-            SearchMode::Text => self
-                .search_hits
-                .iter()
-                .position(|hit| matches!(hit, SearchHit::Text { layout_index, .. } if *layout_index > self.scroll))
-                .unwrap_or(0),
-            _ => 0,
-        };
+        let current = self.search_index as i32;
+        self.search_index = (current + delta).rem_euclid(len as i32) as usize;
         self.goto_search_hit();
     }
 
     /// `n`/`N`: следующий/предыдущий результат с зацикливанием.
     fn search_step(&mut self, forward: bool) {
-        if self.search_hits.is_empty() {
-            return;
-        }
-        let last = self.search_hits.len() - 1;
-        if forward {
-            self.search_index = if self.search_index >= last { 0 } else { self.search_index + 1 };
-        } else {
-            self.search_index = if self.search_index == 0 { last } else { self.search_index - 1 };
-        }
-        self.goto_search_hit();
+        self.move_search_cursor(if forward { 1 } else { -1 });
     }
 
     /// Перейти к текущему результату: текст — центрируем строку вьюпортом,
@@ -1505,9 +1560,47 @@ impl App {
         self.search_active
     }
 
+    /// Живой список совпадений для панели результатов и тестов.
+    pub fn search_results(&self) -> &[SearchHit] {
+        &self.search_hits
+    }
+
+    /// Сколько совпадений сейчас найдено.
+    pub fn search_count(&self) -> usize {
+        self.search_hits.len()
+    }
+
+    /// Курсор в списке результатов — индекс текущего совпадения.
+    pub fn search_cursor(&self) -> usize {
+        self.search_index
+    }
+
+    /// Текст строки списка результатов: строка раскладки с совпадением,
+    /// метка заметки или заголовок главы — один формат для рендера и тестов.
+    pub fn search_row_label(&self, index: usize) -> Option<String> {
+        match self.search_hits.get(index)? {
+            SearchHit::Text { layout_index, .. } => {
+                let info = self.layout.line(*layout_index)?;
+                let block = self.document().block(info.block)?;
+                Some(info.slice(block).trim().to_owned())
+            }
+            SearchHit::Bookmark { index_in_list, .. } => {
+                self.bookmarks.get(*index_in_list).map(|b| b.label.clone())
+            }
+            SearchHit::Toc { toc_index } => {
+                self.document().toc().get(*toc_index).map(|item| item.title.clone())
+            }
+        }
+    }
+
     /// Текущий режим поиска — префикс в слоте (`/t:`, `/b:`, `/o:`).
     pub fn search_mode(&self) -> SearchMode {
         self.search_mode
+    }
+
+    /// Последний подтверждённый запрос — для заголовка панели и тостов.
+    pub fn search_query(&self) -> &str {
+        &self.search_query
     }
 
     /// Строка раскладки текущего совпадения (для подсветки) — `None`, если
