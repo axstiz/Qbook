@@ -56,6 +56,7 @@ fn bar_hint(app: &App, wide: bool) -> Line<'static> {
         (ReaderFocus::Bookmarks, true) => &[
             ("j/k", ""),
             ("Enter", "— к заметке"),
+            ("r", "— ред."),
             ("c/C", "цвет"),
             ("D", "удалить"),
             ("s", "полка"),
@@ -72,7 +73,9 @@ fn bar_hint(app: &App, wide: bool) -> Line<'static> {
             &[("b", ""), ("v", ""), ("t", ""), ("s", ""), ("h", ""), ("q", "")]
         }
         (ReaderFocus::Toc, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
-        (ReaderFocus::Bookmarks, false) => &[("j", ""), ("k", ""), ("c", ""), ("D", ""), ("q", "")],
+        (ReaderFocus::Bookmarks, false) => {
+            &[("j", ""), ("k", ""), ("r", ""), ("c", ""), ("D", ""), ("q", "")]
+        }
         (ReaderFocus::Commands, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
         (ReaderFocus::SearchResults, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
     };
@@ -769,7 +772,7 @@ const HELP: &[&str] = &[
     "3/B — заметки",
     "4 — команды",
     "b — закладка на строке",
-    "c/C — цвет закладки, D — удалить",
+    "c/C — цвет закладки, r — переименовать, D — удалить",
     "n/p — переход по закладкам",
     "/ — поиск, n/N — следующий/предыдущий",
     "Tab — режим поиска: текст/заметки/главы",

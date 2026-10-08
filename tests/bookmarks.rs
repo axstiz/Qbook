@@ -222,8 +222,17 @@ fn r_renames_the_selected_bookmark() {
     app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Char('B')));
     app.handle_key(key(KeyCode::Char('r')));
+    assert_eq!(
+        app.typing_buffer(),
+        Some("Абзац номер 0"),
+        "в окно редактирования подставляется текущая метка"
+    );
     assert!(app.typing_buffer().is_some(), "режим ввода метки");
 
+    let total = app.typing_buffer().map_or(0, |b| b.chars().count());
+    for _ in 0..total {
+        app.handle_key(key(KeyCode::Backspace));
+    }
     for c in "Моя метка".chars() {
         app.handle_key(key(KeyCode::Char(c)));
     }

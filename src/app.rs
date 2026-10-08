@@ -1187,7 +1187,7 @@ impl App {
                 if let Some(bookmark) = self.bookmarks.get(self.bookmark_cursor) {
                     self.typing = Some(Typing {
                         purpose: InputPurpose::RenameBookmark,
-                        buffer: String::new(),
+                        buffer: bookmark.label.clone(),
                         bookmark_id: Some(bookmark.id),
                         anchor: None,
                         color: 0,

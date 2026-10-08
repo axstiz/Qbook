@@ -855,6 +855,20 @@ fn search_panel_hints_empty_query_and_no_matches() {
 }
 
 #[test]
+fn bookmarks_bar_hints_the_rename_key() {
+    let key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    let mut app = app_of(&paragraphs(10));
+    app.set_size(110, 14);
+    app.handle_key(key('3'));
+    assert_eq!(app.focus(), qbook::app::ReaderFocus::Bookmarks);
+
+    let (lines, _) = screen(&mut app, 110, 14);
+    let bar = lines.last().expect("бар");
+    assert!(bar.contains('r'), "бар подсказывает клавишу r: {bar}");
+    assert!(bar.contains("ред"), "и расшифровку редактирования: {bar}");
+}
+
+#[test]
 fn bar_hints_next_navigation_after_enter() {
     let key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
     let mut app = app_of(&paragraphs(10));
