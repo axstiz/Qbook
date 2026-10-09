@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -14,9 +14,10 @@ use crate::app::{
     TEXT_INDENT, WIN_PAD,
 };
 use crate::config::Theme;
+use crate::keys::{Group, corner_hints, current_bindings};
 use crate::model::{BlockKind, LineInfo};
 use crate::parse::txt::{list_marker, strip_heading};
-use crate::ui::{btop_gauge, note_color};
+use crate::ui::{btop_gauge, note_color, render_corner};
 
 /// Сколько команд показываем в блоке «Команды».
 const COMMANDS_MAX_ROWS: usize = 12;
@@ -29,64 +30,56 @@ const BAR_WIDE_AT: u16 = 70;
 const FRAME_PROGRESS_CELLS: usize = 24;
 /// Минимальная высота блока «Заметки» при делении правой колонки.
 const BOOKMARKS_MIN: u16 = 3;
+/// Бледный оранжевый цвет клавиш управления в подсказках действий (выделение,
+/// поиск и т.п.), чтобы они не конкурировали с яркими клавишами блока.
+const ACTION_KEY: Color = Color::Rgb(205, 140, 70);
+/// Серые описания в подсказках действий.
+const ACTION_DESC: Color = Color::Rgb(140, 140, 140);
 
-/// Динамическая подсказка бара: клавиши текущего блока жёлтым (как на полке),
-/// описания — тусклые. `t язык` только у текста, `s полка` и `h справка`
-/// работают из любого блока.
+/// Собрать подсказку действия из пар `(клавиши, описание)`: клавиши оранжевым,
+/// описания серым, разделитель — ` · `. Используется для слота командной строки.
+fn action_hints(pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (i, (key, desc)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::new().fg(ACTION_DESC)));
+        }
+        spans.push(Span::styled((*key).to_owned(), Style::new().fg(ACTION_KEY)));
+        if !desc.is_empty() {
+            spans.push(Span::styled(format!(" {desc}"), Style::new().fg(ACTION_DESC)));
+        }
+    }
+    spans
+}
+
+/// Подсказки блоков: динамический бар снизу. Берутся из тех же привязок, что и
+/// диспетчер (`keys::current_bindings`), поэтому клавиша и её описание не
+/// расходятся. Панельные команды идут раньше глобальных; при узком терминале
+/// описания скрыты.
 fn bar_hint(app: &App, wide: bool) -> Line<'static> {
     let focus = app.focus();
     let colors = app.colors();
-    let pairs: &[(&str, &str)] = match (focus, wide) {
-        // Пока поиск активен, после Enter (фокус у текста) бар напоминает,
-        // как листать результаты и как окончательно закрыть поиск.
-        (ReaderFocus::Text, true) if app.search_active() => {
-            &[("n/N", "дальше/назад"), ("Esc", "— закрыть поиск"), ("s", "полка"), ("q", "выход")]
+    let bindings = current_bindings(focus, app.search_active());
+    let mut entries: Vec<(u8, &'static str, Option<&'static str>)> = Vec::new();
+    for binding in bindings.iter().filter(|b| b.group != Group::Digits) {
+        let Some(bar) = &binding.bar else { continue };
+        if let Some(entry) = entries.iter_mut().find(|(_, label, _)| *label == bar.label) {
+            if entry.2.is_none() {
+                entry.2 = bar.desc;
+            }
+        } else {
+            entries.push((bar.order, bar.label, bar.desc));
         }
-        (ReaderFocus::Text, true) => &[
-            ("b", "заметка"),
-            ("v", "выд"),
-            ("t", "язык"),
-            ("s", "полка"),
-            ("h", "справка"),
-            ("q", "выход"),
-        ],
-        (ReaderFocus::Toc, true) => {
-            &[("j/k", ""), ("Enter", "— к разделу"), ("s", "полка"), ("q", "выход")]
-        }
-        (ReaderFocus::Bookmarks, true) => &[
-            ("j/k", ""),
-            ("Enter", "— к заметке"),
-            ("r", "— ред."),
-            ("c/C", "цвет"),
-            ("D", "удалить"),
-            ("s", "полка"),
-            ("q", "выход"),
-        ],
-        (ReaderFocus::Commands, true) => {
-            &[("j/k", ""), ("Enter", "— подставить"), ("s", "полка"), ("q", "выход")]
-        }
-        (ReaderFocus::SearchResults, true) => {
-            &[("j/k", ""), ("Enter", "— к тексту"), ("Esc", "закрыть поиск"), ("q", "выход")]
-        }
-        (ReaderFocus::Text, false) if app.search_active() => &[("n/N", ""), ("Esc", ""), ("q", "")],
-        (ReaderFocus::Text, false) => {
-            &[("b", ""), ("v", ""), ("t", ""), ("s", ""), ("h", ""), ("q", "")]
-        }
-        (ReaderFocus::Toc, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
-        (ReaderFocus::Bookmarks, false) => {
-            &[("j", ""), ("k", ""), ("r", ""), ("c", ""), ("D", ""), ("q", "")]
-        }
-        (ReaderFocus::Commands, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
-        (ReaderFocus::SearchResults, false) => &[("j", ""), ("k", ""), ("Enter", ""), ("q", "")],
-    };
+    }
+    entries.sort_by_key(|(order, _, _)| *order);
     let sep = if wide { " · " } else { " " };
     let mut spans = Vec::new();
-    for (i, (key, desc)) in pairs.iter().enumerate() {
+    for (i, (_, key, desc)) in entries.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(sep));
         }
         spans.push(Span::styled(*key, Style::new().fg(colors.key).add_modifier(Modifier::BOLD)));
-        if !desc.is_empty() {
+        if wide && let Some(desc) = desc {
             spans.push(Span::styled(format!(" {desc}"), Style::new().add_modifier(Modifier::DIM)));
         }
     }
@@ -117,6 +110,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     let pad = WIN_PAD;
     let header_width = area.width.saturating_sub(2 * pad);
     render_header(app, frame, area.x + pad, header_width, area.y);
+    render_corner(frame, area, &corner_hints(app.focus(), app.search_active()));
     let frame_area = Rect {
         x: area.x + pad,
         y: area.y + pad + 1,
@@ -705,27 +699,32 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, x: u16, width: u16) {
                 if let Some(color) = app.pending_bookmark_color() {
                     spans
                         .push(Span::styled(" ●", Style::new().fg(note_color(app.colors(), color))));
-                    spans
-                        .push(Span::raw(format!(" {} · c/C · Enter", App::note_color_name(color))));
+                    spans.push(Span::styled(
+                        format!(" {}", App::note_color_name(color)),
+                        Style::new().fg(ACTION_DESC),
+                    ));
+                    spans.push(Span::styled(" · ", Style::new().fg(ACTION_DESC)));
+                    spans.extend(action_hints(&[("c/C", ""), ("Enter", "")]));
                 }
             }
             Some(InputPurpose::RenameBookmark) => {
-                spans.push(Span::styled(
-                    "  Enter — сохранить · Esc — отмена",
-                    Style::new().add_modifier(Modifier::DIM),
-                ));
+                spans.push(Span::raw("  "));
+                spans.extend(action_hints(&[("Enter", "— сохранить"), ("Esc", "— отмена")]));
             }
             Some(InputPurpose::Search) => {
-                spans.push(Span::styled(
-                    "  ↑/↓ — список · Tab — режим · Enter — прыжок · Esc — отмена",
-                    Style::new().add_modifier(Modifier::DIM),
-                ));
+                spans.push(Span::raw("  "));
+                spans.extend(action_hints(&[
+                    ("↑/↓", "— список"),
+                    ("Tab", "— режим"),
+                    ("Enter", "— прыжок"),
+                    ("Esc", "— отмена"),
+                ]));
             }
             _ => {}
         }
         Some(Line::from(spans))
     } else if let Some(hint) = app.pick_hint() {
-        Some(Line::from(Span::styled(hint, Style::new().add_modifier(Modifier::DIM))))
+        Some(Line::from(action_hints(hint)))
     } else {
         app.notice()
             .map(|notice| Line::from(Span::styled(notice, Style::new().fg(app.colors().notice))))
@@ -733,7 +732,7 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, x: u16, width: u16) {
     frame.render_widget(Paragraph::new(line.unwrap_or_default()), slot);
 }
 
-/// Клавиатурный бар btop в нижней строке: подсказка цифровых панелей и
+/// Клавиатурный бар btop в нижней строке: подсказки блоков — цифровые панели и
 /// клавиши текущего блока. Сами цифры живут в рамках колонок.
 fn render_bar(app: &App, frame: &mut Frame, x: u16, width: u16, y: u16) {
     let bar_area = Rect { x, y, width, height: 1 };
@@ -765,7 +764,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
 }
 
 const HELP: &[&str] = &[
-    "j/k, Space, PgUp/PgDn, g/G — прокрутка",
+    "↑/↓, j/k, Space, PgUp/PgDn, g/G — прокрутка",
     "цифра 1–4 — фокус блока",
     "Shift+цифра — показать/скрыть колонку",
     "2/o — оглавление",
@@ -781,9 +780,9 @@ const HELP: &[&str] = &[
     ": open <путь> — открыть книгу",
     ": lang t|<код> — язык, : goto <N> — переход",
     ": theme set <имя> — сменить тему",
-    "s — полка",
+    "S — полка",
     "h — справка",
-    "Esc — к тексту · q — выход",
+    "Esc — к тексту · Q — выход",
 ];
 
 fn compact_status(app: &App, width: u16) -> Line<'static> {

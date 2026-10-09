@@ -8,6 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::align::{Alignment, align};
 use crate::cli::{find_sidecars, lang_from_filename};
 use crate::config::{Config, Theme};
+use crate::keys::{KeyCmd, current_bindings, match_key};
 use crate::model::{Anchor, Block, Document, Layout, LineInfo, anchor_to_scroll, scroll_to_anchor};
 use crate::parse;
 use crate::store::{Bookmark, DEFAULT_NOTE_COLOR, Store, StoreError, document_hash};
@@ -720,123 +721,111 @@ impl App {
             self.handle_help_key(key);
         } else if self.pick.is_some() {
             self.handle_pick_key(key);
-        } else if self.panel_digit(key) {
-            // Цифры 1–4 переключают постоянные btop-колонки из любого фокуса.
-        } else if self.reader_global_key(key) {
-            // `q`/`s`/`h` работают из любого блока, не только из текста.
-        } else {
-            match self.focus {
-                ReaderFocus::Text => self.handle_reader_key(key),
-                ReaderFocus::Toc => self.handle_toc_key(key),
-                ReaderFocus::Bookmarks => self.handle_bookmarks_key(key),
-                ReaderFocus::Commands => self.handle_commands_key(key),
-                ReaderFocus::SearchResults => self.handle_search_results_key(key),
-            }
+        } else if let Some(cmd) = match_key(&current_bindings(self.focus, self.search_active), key)
+        {
+            self.apply_cmd(cmd);
         }
     }
 
-    /// Клавиши, живущие вне фокуса: выход, полка, справка и поиск.
-    fn reader_global_key(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.quit = true;
-            }
-            KeyCode::Char('s') => self.go_shelf(),
-            KeyCode::Char('h') => self.help_open = true,
-            KeyCode::Char('/') => self.start_search(),
-            // Двухступенчатый выход из поиска: панель → текст → закрыть.
-            KeyCode::Esc if self.focus == ReaderFocus::SearchResults => {
-                self.focus = ReaderFocus::Text;
-            }
-            KeyCode::Esc if self.search_active => self.close_search(),
-            KeyCode::Char('n') if self.search_active => self.search_step(true),
-            KeyCode::Char('N') if self.search_active => self.search_step(false),
-            _ => return false,
-        }
-        true
-    }
-
-    fn handle_reader_key(&mut self, key: KeyEvent) {
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.scroll_by(1),
-            KeyCode::Char('k') | KeyCode::Up => self.scroll_by(-1),
-            KeyCode::Char(' ') | KeyCode::PageDown => {
-                self.scroll_by(self.viewport_height() as isize)
-            }
-            KeyCode::PageUp => self.scroll_by(-(self.viewport_height() as isize)),
-            KeyCode::Char('d') if control => self.scroll_by((self.viewport_height() / 2) as isize),
-            KeyCode::Char('u') if control => {
-                self.scroll_by(-((self.viewport_height() / 2) as isize))
-            }
-            KeyCode::Char('g') => self.scroll = 0,
-            KeyCode::Char('G') => self.scroll = self.max_scroll(),
-            KeyCode::Char('t') => {
+    /// Исполнить команду активного окна. Порядок и условия привязок задаёт
+    /// `keys::current_bindings`, здесь — только эффект команды.
+    fn apply_cmd(&mut self, cmd: KeyCmd) {
+        match cmd {
+            KeyCmd::FocusText => self.focus = ReaderFocus::Text,
+            KeyCmd::FocusToc => self.focus_toc(),
+            KeyCmd::FocusBookmarks => self.focus_bookmarks(),
+            KeyCmd::FocusCommands => self.focus_commands(),
+            KeyCmd::TogglePanels => self.toggle_panels(),
+            KeyCmd::ToggleToc => self.toggle_toc(),
+            KeyCmd::ToggleBookmarks => self.toggle_bookmarks(),
+            KeyCmd::ToggleCommands => self.toggle_commands(),
+            KeyCmd::Quit => self.quit = true,
+            KeyCmd::GoShelf => self.go_shelf(),
+            KeyCmd::Help => self.help_open = true,
+            KeyCmd::StartSearch => self.start_search(),
+            KeyCmd::EscSearchPanel => self.focus = ReaderFocus::Text,
+            KeyCmd::CloseSearch => self.close_search(),
+            KeyCmd::SearchNext => self.search_step(true),
+            KeyCmd::SearchPrev => self.search_step(false),
+            KeyCmd::ScrollDown => self.scroll_by(1),
+            KeyCmd::ScrollUp => self.scroll_by(-1),
+            KeyCmd::ScrollPageDown => self.scroll_by(self.viewport_height() as isize),
+            KeyCmd::ScrollPageUp => self.scroll_by(-(self.viewport_height() as isize)),
+            KeyCmd::ScrollHalfDown => self.scroll_by((self.viewport_height() / 2) as isize),
+            KeyCmd::ScrollHalfUp => self.scroll_by(-((self.viewport_height() / 2) as isize)),
+            KeyCmd::ScrollTop => self.scroll = 0,
+            KeyCmd::ScrollBottom => self.scroll = self.max_scroll(),
+            KeyCmd::NextLang => {
                 self.next_lang();
             }
-            KeyCode::Char('5') | KeyCode::Char(':') => self.start_command(),
-            KeyCode::Char('b') => self.start_note_pick(),
-            KeyCode::Char('v') => self.start_select(),
-            KeyCode::Char('n') => self.jump_bookmark(true),
-            KeyCode::Char('p') => self.jump_bookmark(false),
-            KeyCode::Char('?') => self.help_open = true,
-            KeyCode::Char('[') => self.resize_column(-COL_STEP),
-            KeyCode::Char(']') => self.resize_column(COL_STEP),
-            _ => {}
-        }
-    }
-
-    /// Цифра 1–4 — фокус на блок; Shift+цифра — показать/скрыть.
-    /// `o`/`B` — однобуквенные фокус-алиасы глав и заметок.
-    fn panel_digit(&mut self, key: KeyEvent) -> bool {
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        match key.code {
-            KeyCode::Char('1') if !shift => {
+            KeyCmd::StartCommand => self.start_command(),
+            KeyCmd::StartNotePick => self.start_note_pick(),
+            KeyCmd::StartSelect => self.start_select(),
+            KeyCmd::JumpBookmarkNext => self.jump_bookmark(true),
+            KeyCmd::JumpBookmarkPrev => self.jump_bookmark(false),
+            KeyCmd::NarrowColumn => self.resize_column(-COL_STEP),
+            KeyCmd::WidenColumn => self.resize_column(COL_STEP),
+            KeyCmd::TocCursorDown => {
+                let last = self.document().toc().len().saturating_sub(1);
+                self.toc_cursor = (self.toc_cursor + 1).min(last);
+            }
+            KeyCmd::TocCursorUp => self.toc_cursor = self.toc_cursor.saturating_sub(1),
+            KeyCmd::TocEnter => {
+                if let Some(item) = self.document().toc().get(self.toc_cursor).cloned() {
+                    let base = self.translate(Anchor::at_block(item.block), 0);
+                    self.goto_anchor(base);
+                }
                 self.focus = ReaderFocus::Text;
             }
-            KeyCode::Char('1') if shift => {
-                self.toggle_panels();
+            KeyCmd::BookmarkCursorDown => {
+                self.bookmark_cursor =
+                    (self.bookmark_cursor + 1).min(self.bookmarks.len().saturating_sub(1));
             }
-            KeyCode::Char('!') => {
-                self.toggle_panels();
+            KeyCmd::BookmarkCursorUp => {
+                self.bookmark_cursor = self.bookmark_cursor.saturating_sub(1);
             }
-            KeyCode::Char('2') if !shift => {
-                self.focus_toc();
+            KeyCmd::BookmarkEnter => {
+                if let Some(bookmark) = self.bookmarks.get(self.bookmark_cursor).cloned() {
+                    self.goto_anchor(bookmark.anchor);
+                    self.focus = ReaderFocus::Text;
+                }
             }
-            KeyCode::Char('2') if shift => {
-                self.toggle_toc();
+            KeyCmd::RenameBookmark => {
+                if let Some(bookmark) = self.bookmarks.get(self.bookmark_cursor) {
+                    self.typing = Some(Typing {
+                        purpose: InputPurpose::RenameBookmark,
+                        buffer: bookmark.label.clone(),
+                        bookmark_id: Some(bookmark.id),
+                        anchor: None,
+                        color: 0,
+                    });
+                }
             }
-            KeyCode::Char('o') => {
-                self.focus_toc();
+            KeyCmd::RecolorNext => self.recolor_by(1),
+            KeyCmd::RecolorPrev => self.recolor_by(-1),
+            KeyCmd::DeleteBookmark => self.delete_selected_bookmark(),
+            KeyCmd::CommandCursorDown => {
+                let last = COMMANDS.len().saturating_sub(1);
+                self.command_cursor = (self.command_cursor + 1).min(last);
             }
-            KeyCode::Char('@') | KeyCode::Char('"') => {
-                self.toggle_toc();
+            KeyCmd::CommandCursorUp => {
+                self.command_cursor = self.command_cursor.saturating_sub(1);
             }
-            KeyCode::Char('3') if !shift => {
-                self.focus_bookmarks();
+            KeyCmd::CommandEnter => {
+                let Some((name, args, _)) = COMMANDS.get(self.command_cursor) else {
+                    self.focus = ReaderFocus::Text;
+                    return;
+                };
+                self.start_command();
+                if let Some(typing) = &mut self.typing {
+                    typing.buffer =
+                        if args.is_empty() { name.to_string() } else { format!("{name} ") };
+                }
             }
-            KeyCode::Char('3') if shift && !self.search_active => {
-                self.toggle_bookmarks();
-            }
-            KeyCode::Char('B') => {
-                self.focus_bookmarks();
-            }
-            KeyCode::Char('#') | KeyCode::Char('№') if !self.search_active => {
-                self.toggle_bookmarks();
-            }
-            KeyCode::Char('4') if !shift => {
-                self.focus_commands();
-            }
-            KeyCode::Char('4') if shift && !self.search_active => {
-                self.toggle_commands();
-            }
-            KeyCode::Char('$') | KeyCode::Char(';') if !self.search_active => {
-                self.toggle_commands();
-            }
-            _ => return false,
+            KeyCmd::SearchCursorDown => self.move_search_cursor(1),
+            KeyCmd::SearchCursorUp => self.move_search_cursor(-1),
+            KeyCmd::SearchEnter => self.focus = ReaderFocus::Text,
         }
-        true
     }
 
     /// Shift+1: только текст ⇄ все колонки.
@@ -978,14 +967,15 @@ impl App {
         }
     }
 
-    /// Подсказка в слоте, пока курсор pick активен.
-    pub fn pick_hint(&self) -> Option<&'static str> {
+    /// Подсказки действий в слоте, пока курсор pick активен: пары
+    /// `(клавиши, описание)`, рендер красит клавиши отдельно.
+    pub fn pick_hint(&self) -> Option<&'static [(&'static str, &'static str)]> {
         match &self.pick {
             Some(Pick { kind: PickKind::Note, .. }) => {
-                Some("↑/↓ строка · Enter — заметка · Esc — отмена")
+                Some(&[("↑/↓", "строка"), ("Enter", "— заметка"), ("Esc", "— отмена")])
             }
             Some(Pick { kind: PickKind::Select, .. }) => {
-                Some("↑/↓ выделение · Enter/y — копировать · Esc — отмена")
+                Some(&[("↑/↓", "выделение"), ("Enter/y", "— копировать"), ("Esc", "— отмена")])
             }
             None => None,
         }
@@ -1114,24 +1104,6 @@ impl App {
         });
     }
 
-    fn handle_toc_key(&mut self, key: KeyEvent) {
-        let last = self.document().toc().len().saturating_sub(1);
-        match key.code {
-            KeyCode::Esc => self.focus = ReaderFocus::Text,
-            KeyCode::Char('j') | KeyCode::Down => self.toc_cursor = (self.toc_cursor + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => self.toc_cursor = self.toc_cursor.saturating_sub(1),
-            KeyCode::Enter => {
-                if let Some(item) = self.document().toc().get(self.toc_cursor).cloned() {
-                    let base = self.translate(Anchor::at_block(item.block), 0);
-                    self.goto_anchor(base);
-                }
-                self.focus = ReaderFocus::Text;
-            }
-            // `q` здесь не выходит из приложения — сначала вернись к тексту.
-            _ => {}
-        }
-    }
-
     fn handle_help_key(&mut self, key: KeyEvent) {
         if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h')) {
             self.help_open = false;
@@ -1142,7 +1114,7 @@ impl App {
     fn handle_shelf_key(&mut self, key: KeyEvent) {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('Q') => self.quit = true,
             KeyCode::Char('c') if control => self.quit = true,
             KeyCode::Char('j') | KeyCode::Down => {
                 self.shelf_cursor =
@@ -1163,77 +1135,6 @@ impl App {
                 });
             }
             KeyCode::Char('d') => self.delete_selected(),
-            _ => {}
-        }
-    }
-
-    fn handle_bookmarks_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => self.focus = ReaderFocus::Text,
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.bookmark_cursor =
-                    (self.bookmark_cursor + 1).min(self.bookmarks.len().saturating_sub(1));
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.bookmark_cursor = self.bookmark_cursor.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                if let Some(bookmark) = self.bookmarks.get(self.bookmark_cursor).cloned() {
-                    self.goto_anchor(bookmark.anchor);
-                    self.focus = ReaderFocus::Text;
-                }
-            }
-            KeyCode::Char('r') => {
-                if let Some(bookmark) = self.bookmarks.get(self.bookmark_cursor) {
-                    self.typing = Some(Typing {
-                        purpose: InputPurpose::RenameBookmark,
-                        buffer: bookmark.label.clone(),
-                        bookmark_id: Some(bookmark.id),
-                        anchor: None,
-                        color: 0,
-                    });
-                }
-            }
-            KeyCode::Char('c') => self.recolor_by(1),
-            KeyCode::Char('C') => self.recolor_by(-1),
-            KeyCode::Char('D') => self.delete_selected_bookmark(),
-            _ => {}
-        }
-    }
-
-    /// Список полезных команд правой колонки: Enter подставляет команду в `:`.
-    fn handle_commands_key(&mut self, key: KeyEvent) {
-        let last = COMMANDS.len().saturating_sub(1);
-        match key.code {
-            KeyCode::Esc => self.focus = ReaderFocus::Text,
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.command_cursor = (self.command_cursor + 1).min(last);
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.command_cursor = self.command_cursor.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                let Some((name, args, _)) = COMMANDS.get(self.command_cursor) else {
-                    self.focus = ReaderFocus::Text;
-                    return;
-                };
-                self.start_command();
-                if let Some(typing) = &mut self.typing {
-                    typing.buffer =
-                        if args.is_empty() { name.to_string() } else { format!("{name} ") };
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Панель результатов поиска: `j`/`k` шагают курсором с живым прыжком,
-    /// `Enter` — к тексту (панель остаётся); `n`/`N`/`Esc` — в global_key.
-    fn handle_search_results_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.move_search_cursor(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_search_cursor(-1),
-            KeyCode::Enter => self.focus = ReaderFocus::Text,
             _ => {}
         }
     }

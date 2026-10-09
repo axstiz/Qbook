@@ -54,6 +54,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     frame.render_widget(block, shelf_area);
     let bar = Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 };
     frame.render_widget(Paragraph::new(footer_line(app)), bar);
+    crate::ui::render_corner(frame, area, &[("Q", "выход")]);
 }
 
 fn book_line(theme: &Theme, book: &crate::app::ShelfBook, selected: bool) -> Line<'static> {
@@ -97,9 +98,7 @@ fn footer_line(app: &App) -> Line<'static> {
             key_span(colors, "a"),
             dim(" добавить · "),
             key_span(colors, "d"),
-            dim(" удалить · "),
-            key_span(colors, "q"),
-            dim(" выход"),
+            dim(" удалить"),
         ])
     }
 }

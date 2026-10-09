@@ -232,12 +232,12 @@ fn scroll_tail_keeps_percent_at_the_end() {
 }
 
 #[test]
-fn q_and_ctrl_c_request_exit() {
+fn capital_q_and_ctrl_c_request_exit() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 3);
     let mut app = load(&base, None);
     assert!(!app.should_quit());
-    app.handle_key(key(KeyCode::Char('q')));
+    app.handle_key(key(KeyCode::Char('Q')));
     assert!(app.should_quit());
 
     let mut app = load(&base, None);
@@ -424,29 +424,29 @@ fn help_toggles_with_question_mark_h_and_esc() {
 }
 
 #[test]
-fn q_and_h_work_from_any_block() {
+fn capital_q_and_h_work_from_any_block() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 3);
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('o')));
-    app.handle_key(key(KeyCode::Char('q')));
-    assert!(app.should_quit(), "q в фокусе глав выходит");
+    app.handle_key(key(KeyCode::Char('Q')));
+    assert!(app.should_quit(), "Q в фокусе глав выходит");
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('3')));
-    app.handle_key(key(KeyCode::Char('q')));
-    assert!(app.should_quit(), "q в фокусе заметок выходит");
+    app.handle_key(key(KeyCode::Char('Q')));
+    assert!(app.should_quit(), "Q в фокусе заметок выходит");
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('4')));
-    app.handle_key(key(KeyCode::Char('q')));
-    assert!(app.should_quit(), "q в фокусе команд выходит");
+    app.handle_key(key(KeyCode::Char('Q')));
+    assert!(app.should_quit(), "Q в фокусе команд выходит");
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('o')));
-    app.handle_key(key(KeyCode::Char('s')));
-    assert_eq!(app.screen(), qbook::app::Screen::Shelf, "s в фокусе глав — на полку");
+    app.handle_key(key(KeyCode::Char('S')));
+    assert_eq!(app.screen(), qbook::app::Screen::Shelf, "S в фокусе глав — на полку");
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('o')));
@@ -455,11 +455,22 @@ fn q_and_h_work_from_any_block() {
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('?')));
-    app.handle_key(key(KeyCode::Char('q')));
-    assert!(!app.should_quit(), "q в справке не выходит");
+    app.handle_key(key(KeyCode::Char('Q')));
+    assert!(!app.should_quit(), "Q в справке не выходит");
     app.handle_key(key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Char('Q')));
+    assert!(app.should_quit(), "после закрытия Q выходит");
+}
+
+#[test]
+fn lowercase_q_and_s_do_not_act_in_reader() {
+    let tmp = dir();
+    let base = book_pair(tmp.path(), 3);
+    let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('q')));
-    assert!(app.should_quit(), "после закрытия q выходит");
+    assert!(!app.should_quit(), "строчная q больше не выходит");
+    app.handle_key(key(KeyCode::Char('s')));
+    assert_eq!(app.screen(), qbook::app::Screen::Reader, "строчная s больше не открывает полку");
 }
 
 #[test]
@@ -759,14 +770,14 @@ fn t_cycles_languages_and_out_of_range_keys_are_ignored() {
 }
 
 #[test]
-fn s_opens_shelf_and_old_l_keys_are_gone() {
+fn capital_s_opens_shelf_and_old_l_keys_are_gone() {
     let tmp = dir();
     let base = book_pair(tmp.path(), 4);
 
     let mut app = load(&base, None);
-    app.handle_key(key(KeyCode::Char('s')));
-    assert_eq!(app.screen(), qbook::app::Screen::Shelf, "s открывает полку");
-    assert!(!app.help_open(), "s не открывает справку");
+    app.handle_key(key(KeyCode::Char('S')));
+    assert_eq!(app.screen(), qbook::app::Screen::Shelf, "S открывает полку");
+    assert!(!app.help_open(), "S не открывает справку");
 
     let mut app = load(&base, None);
     app.handle_key(key(KeyCode::Char('l')));

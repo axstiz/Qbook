@@ -94,10 +94,12 @@ fn shelf_enter_opens_the_selected_book() {
 }
 
 #[test]
-fn shelf_quits_on_q() {
+fn shelf_quits_on_capital_q_and_ignores_lowercase() {
     let tmp = dir();
     let mut app = App::shelf(Some(store_of(&tmp)), "en").expect("полка");
     app.handle_key(key(KeyCode::Char('q')));
+    assert!(!app.should_quit(), "строчная q на полке больше не выходит");
+    app.handle_key(key(KeyCode::Char('Q')));
     assert!(app.should_quit());
 }
 

@@ -1,5 +1,5 @@
 use qbook::app::App;
-use qbook::ui::reader;
+use qbook::ui::{reader, shelf};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -56,11 +56,14 @@ fn title_line_shows_position_percent_and_quality() {
 
     let (lines, _) = screen(&mut app, 100, 10);
     let bar = lines.last().expect("строки есть");
-    assert!(bar.contains("выход"), "полный бар на широком терминале: {bar}");
+    assert!(!bar.contains("выход"), "выход уехал в угол: {bar}");
+    assert!(!bar.contains("S полка"), "S переехала в угол: {bar}");
     assert!(bar.contains("t язык"), "бар про язык: {bar}");
-    assert!(bar.contains("s полка"), "бар про полку: {bar}");
     assert!(bar.contains("h справка"), "бар про справку: {bar}");
     assert!(bar.contains("b заметка"), "динамическая подсказка текста: {bar}");
+    let corner = &lines[0];
+    assert!(corner.contains("S полка"), "угол про полку: {corner}");
+    assert!(corner.contains("Q выход"), "угол про выход: {corner}");
     let toc = lines.iter().find(|line| line.contains(" Главы ")).expect("панель глав есть");
     assert!(toc.contains("╭2"), "цифра 2 на рамке глав: {toc}");
 }
@@ -336,6 +339,29 @@ fn note_prompt_renders_its_label() {
         crossterm::event::KeyCode::Esc,
         crossterm::event::KeyModifiers::NONE,
     ));
+}
+
+#[test]
+fn action_hints_color_keys_orange_and_descriptions_gray() {
+    let mut app = app_of(&paragraphs(20));
+    app.set_size(100, 11);
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    app.handle_key(key(KeyCode::Char('/')));
+    app.handle_key(key(KeyCode::Char('x')));
+
+    let (lines, buffer) = screen(&mut app, 100, 11);
+    let slot_y: u16 = 9;
+    let slot = &lines[slot_y as usize];
+    assert!(slot.contains("— список"), "подсказка поиска в слоте: {slot}");
+
+    let orange = Color::Rgb(205, 140, 70);
+    let gray = Color::Rgb(140, 140, 140);
+    let has_orange = (0..100u16).any(|x| buffer[(x, slot_y)].style().fg == Some(orange));
+    let has_gray = (0..100u16).any(|x| buffer[(x, slot_y)].style().fg == Some(gray));
+    assert!(has_orange, "клавиши действий оранжевые: {slot}");
+    assert!(has_gray, "описания действий серые: {slot}");
+    let yellow = (0..100u16).any(|x| buffer[(x, slot_y)].style().fg == Some(Color::Yellow));
+    assert!(!yellow, "подсказки действий не кричат цветом бара: {slot}");
 }
 
 #[test]
@@ -885,5 +911,55 @@ fn bar_hints_next_navigation_after_enter() {
     let bar = lines.last().expect("бар");
     assert!(bar.contains("n/N"), "бар подсказывает листать n/N: {bar}");
     assert!(bar.contains("закрыть поиск"), "бар подсказывает Esc-закрытие: {bar}");
+    assert!(bar.contains("b заметка"), "в поиске остаётся заметка: {bar}");
+    assert!(bar.contains("v выд"), "в поиске остаётся выделение: {bar}");
     assert!(!bar.contains("j/k"), "бар не про панель результатов: {bar}");
+}
+
+fn shelf_screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("терминал");
+    terminal.draw(|frame| shelf::render(app, frame)).expect("отрисовка");
+    let buffer = terminal.backend().buffer().clone();
+    (0..height).map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect()
+}
+
+#[test]
+fn corner_shows_shelf_and_quit_hints() {
+    let mut app = app_of(&paragraphs(10));
+    app.set_size(110, 14);
+    let (lines, _) = screen(&mut app, 110, 14);
+    let corner = &lines[0];
+    assert!(corner.contains("S полка"), "угол: {corner}");
+    assert!(corner.contains("Q выход"), "угол: {corner}");
+    let bar = lines.last().expect("бар");
+    assert!(!bar.contains("S полка"), "в баре S нет: {bar}");
+    assert!(!bar.contains("Q выход"), "в баре Q нет: {bar}");
+}
+
+#[test]
+fn corner_keeps_shelf_hint_while_searching() {
+    let key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    let mut app = app_of(&paragraphs(10));
+    app.set_size(110, 14);
+    app.handle_key(key('/'));
+    for c in "абзац".chars() {
+        app.handle_key(key(c));
+    }
+    app.handle_key(crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let (lines, _) = screen(&mut app, 110, 14);
+    let corner = &lines[0];
+    assert!(corner.contains("S полка"), "S не пропадает в поиске: {corner}");
+    assert!(corner.contains("Q выход"), "Q в углу: {corner}");
+}
+
+#[test]
+fn shelf_quit_hint_moves_to_corner() {
+    let mut app = App::shelf(None, "en").expect("полка");
+    app.set_size(80, 10);
+    let lines = shelf_screen(&mut app, 80, 10);
+    let corner = &lines[0];
+    assert!(corner.contains("Q выход"), "угол полки: {corner}");
+    let footer = lines.last().expect("футер");
+    assert!(footer.contains("Enter"), "футер Enter: {footer}");
+    assert!(!footer.contains("выход"), "выход уехал в угол: {footer}");
 }
