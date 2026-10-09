@@ -6,13 +6,29 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 
 use qbook::app::App;
-use qbook::cli::Cli;
+use qbook::cli::{Cli, Command};
 use qbook::event;
 use qbook::store::Store;
 use qbook::ui;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(Command::Translate(args)) = &cli.command {
+        #[cfg(feature = "translate")]
+        {
+            qbook::translate::run(args)?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "translate"))]
+        {
+            let _ = args;
+            anyhow::bail!(
+                "qbook собран без поддержки перевода: пересоберите с `--features translate`"
+            );
+        }
+    }
+
     let config = qbook::config::load(cli.theme.as_deref())?;
     let store = Store::open_default()?;
     let mut app = match (&cli.path, cli.lang.as_deref()) {

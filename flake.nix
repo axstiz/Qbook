@@ -30,26 +30,38 @@
         };
       });
 
-      packages = forAll (pkgs: {
-        default = pkgs.rustPlatform.buildRustPackage {
-          pname = "qbook";
-          version = "0.1.0";
-          src = lib.fileset.toSource {
-            root = ./.;
-            fileset = lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./src
-            ];
-          };
-          cargoLock.lockFile = ./Cargo.lock;
+      packages = forAll (
+        pkgs:
+        let
+          qbook =
+            extra:
+            pkgs.rustPlatform.buildRustPackage (
+              {
+                pname = "qbook";
+                version = "0.1.0";
+                src = lib.fileset.toSource {
+                  root = ./.;
+                  fileset = lib.fileset.unions [
+                    ./Cargo.toml
+                    ./Cargo.lock
+                    ./src
+                  ];
+                };
+                cargoLock.lockFile = ./Cargo.lock;
 
-          meta = {
-            description = "Terminal reader for EPUB/text with synchronised translation switching";
-            mainProgram = "qbook";
-          };
-        };
-      });
+                meta = {
+                  description = "Terminal reader for EPUB/text with synchronised translation switching";
+                  mainProgram = "qbook";
+                };
+              }
+              // extra
+            );
+        in
+        {
+          default = qbook { };
+          with-translate = qbook { cargoFeatures = [ "translate" ]; };
+        }
+      );
 
       formatter = forAll (pkgs: pkgs.nixfmt-rfc-style);
     };

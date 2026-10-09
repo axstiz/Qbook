@@ -56,6 +56,39 @@ qbook book.md --lang ru --variant en=../english/book.en.md
 Выравнивание абзацев — banded Needleman–Wunsch; результат кэшируется в
 хранилище вместе с контрольными суммами файлов.
 
+## Автоперевод EPUB
+
+`qbook translate` переводит целый EPUB и кладёт результат рядом как сайдкар
+`book.<lang>.epub` — при открытии книги он подхватится кнопкой `t`. Меняются
+только текстовые узлы (тело книги и оглавление `nav`/`toc.ncx`); разметка,
+стили, иллюстрации, шрифты и OPF сохраняются как есть.
+
+Перевод оффлайн: используется локальный сервер
+[LibreTranslate](https://libretranslate.com) (обёртка над Argos Translate,
+CPU, веса моделей — единицы сотен МБ, GPU не нужен). Поднимите сервер и вызовите:
+
+```sh
+# один раз: сервер с нужными языками, например en→ru
+pip install libretranslate
+libretranslate --load-only en,ru
+
+qbook translate книга.epub ru                 # книга.ru.epub рядом
+qbook translate книга.epub ru --from en        # язык исходника вручную
+qbook translate книга.epub ru --output out.epub --server http://localhost:5000
+```
+
+Функция вынесена в Cargo-фичу `translate` и по умолчанию выключена, поэтому
+ядро читалки не тянет HTTP-клиент:
+
+```sh
+cargo build --release --features translate
+# или
+nix build .#with-translate
+```
+
+Без этой фичи `qbook translate` сообщит, что бинарник собран без поддержки
+перевода.
+
 ## Раскладка клавиш
 
 Читалка — трёхколоночная btop-оболочка: шапка книги над блоками, слева «Главы»,

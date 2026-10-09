@@ -7,6 +7,10 @@ description = "Terminal reader for EPUB/text with synchronised translation switc
 license = "MIT"
 repository = "https://github.com/axstiz/Qbook"
 
+[features]
+default = []
+translate = ["dep:ureq", "dep:serde_json"]
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -18,10 +22,12 @@ ratatui = "0.30"
 rusqlite = { version = "0.40", features = ["bundled"] }
 scraper = "0.27"
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1", optional = true }
 thiserror = "2"
 toml = "1.1.6"
 unicode-segmentation = "1"
 unicode-width = "0.2"
+ureq = { version = "2", default-features = false, optional = true }
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

@@ -32,6 +32,44 @@ pub fn detect_lang(path: &Path) -> Option<String> {
     (!lang.is_empty()).then_some(lang)
 }
 
+/// Пути контент-документов книги: тело книги, оглавление `nav`, оглавление `ncx`.
+#[cfg(feature = "translate")]
+pub(crate) struct ContentPaths {
+    pub body: Vec<String>,
+    pub nav: Option<String>,
+    pub ncx: Option<String>,
+}
+
+/// Читает OPF и возвращает пути документов, в которых живёт переводимый текст.
+#[cfg(feature = "translate")]
+pub(crate) fn content_documents<R: std::io::Read + std::io::Seek>(
+    zip: &mut ZipArchive<R>,
+) -> Result<ContentPaths, ParseError> {
+    let opf_path = read_container(zip)?;
+    let opf = read_entry(zip, &opf_path)?;
+    let package = Package::parse(&opf)
+        .map_err(|problem| ParseError::Malformed { path: opf_path.clone(), problem })?;
+    let opf_dir = parent_dir(&opf_path);
+
+    let body = package
+        .spine
+        .iter()
+        .filter_map(|idref| {
+            package
+                .manifest
+                .iter()
+                .find(|item| item.id == *idref)
+                .map(|item| join(&opf_dir, &percent_decode(&item.href)))
+        })
+        .collect();
+
+    let doc_path = |doc: &TocDoc| join(&opf_dir, &percent_decode(doc.href()));
+    let nav = package.toc_doc.as_ref().filter(|d| matches!(d, TocDoc::Nav(_))).map(doc_path);
+    let ncx = package.toc_doc.as_ref().filter(|d| matches!(d, TocDoc::Ncx(_))).map(doc_path);
+
+    Ok(ContentPaths { body, nav, ncx })
+}
+
 fn parse_archive<R: std::io::Read + std::io::Seek>(
     zip: &mut ZipArchive<R>,
     path: &str,

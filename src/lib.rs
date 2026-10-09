@@ -8,4 +8,6 @@ pub mod keys;
 pub mod model;
 pub mod parse;
 pub mod store;
+#[cfg(feature = "translate")]
+pub mod translate;
 pub mod ui;

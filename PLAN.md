@@ -476,3 +476,69 @@ flake.nix
 94. Тесты: угол S/Q (`tests/keys.rs`, `tests/render.rs`), цвет подсказок
     действий, метка `c/C`, `b`/`v` при поиске; метрики: `cargo test` (266) /
     `clippy -D warnings` / `fmt` зелёные, `nix build` собирается
+
+### Блок 26 — оффлайн-перевод EPUB (план)
+
+Мотивация: читалка уже **потребляет** переводы (`--variant`, сайдкары, `t`), но
+не умеет их **производить**. `qbook translate` — недостающая половина. Перевод
+идёт **локально** (LibreTranslate/Argos, CPU, оффлайн), фича — отдельная
+Cargo-фича `translate` (по умолчанию off): ядро не тяжелеет и не тянет
+внешний сервис.
+
+Ключевое решение: не flatten'им книгу в блоки, а правим **текстовые узлы
+XHTML прямо внутри EPUB**. Вход и выход — полноценный EPUB: CSS, картинки,
+шрифты, OPF, контейнер, структура и атрибуты сохраняются, меняется только
+текст → `book.<lang>.epub`. Раз qbook-парсер получает те же теги и тот же
+spine, набор блоков и `kind` совпадают, а значит `align::fast_path`
+(`src/align/mod.rs:306`) даёт тождественную карту и `coverage() == 1.0`, `t`
+переключает точно.
+
+95. `Cargo.toml`: `[features] translate = ["dep:ureq", "dep:serde_json"]`;
+    `ureq` optional и `default-features = false` (без TLS — движок на
+    `localhost`), `serde_json` optional; `src/lib.rs`:
+    `#[cfg(feature = "translate")] pub mod translate;`. Дефолтная сборка не
+    меняется по весу; `flake.nix` получает вариант `with-translate`
+    (`cargoFeatures = ["translate"]`), дефолтный пакет не трогаем
+96. `src/translate/xhtml.rs` — шаблонизатор по блочным единицам на `quick-xml`
+    (`buffer_position()` → разметка копируется байт-в-байт):
+    - единицы перевода: `p/h1..h6/li/blockquote/td/dt/dd/figcaption` (тело),
+      `a` (nav.xhtml), `text` (toc.ncx);
+    - теги → токены `[[n]]`/`[[/n]]`, void (`br/img/hr`) → `[[n]]`; текст
+      инлайн-тегов (`em/a/span`) остаётся текстом шаблона и переводится;
+    - пропуск (не переводим): `script/style/head/title/svg/math/pre/code/rt/rp`;
+    - `rebuild` подставляет обратно разметку и перевод (переэкранирование
+      `& < >`); при нарушении токенов — фолбэк на поузловый перевод блока
+97. `src/translate/libretranslate.rs` — основной движок: `POST
+    {base_url}/translate` с `{q:[…], source, target, format:"text"}` →
+    `translatedText:[…]`; `source:"auto"` поддержан. `Transport` — трейт,
+    реальная реализация на `ureq`, тестовая — фейк (без сети)
+98. `src/translate/openai.rs` — опциональный LLM-backend (Ollama/LM Studio) по
+    той же абстракции `Engine` (для тех, у кого есть мощности)
+99. `src/translate/epub.rs` — zip-цикл: content-документы из OPF (хелпер
+    `pub(crate)` в `parse::epub`), записи копируются в исходном порядке и с
+    исходным методом сжатия (`raw_copy_file`, иначе read+write), `mimetype`
+    первым и `Stored`; перезаписываются только изменённые XHTML
+100. `src/translate/mod.rs` — `trait Engine`, батчинг (`--batch`, фолбэк
+     меньшим батчем при несовпадении числа сегментов), `--jobs` параллельных
+     запросов, `translate_epub(src, dst, from, to, engine, opts) -> Stats`,
+     прогресс в stderr
+101. `src/cli.rs`/`src/main.rs` — подкоманда `qbook translate <file.epub>
+     --to ru [--from auto] [--engine libretranslate] [--base-url
+     http://localhost:5000] [--out book.ru.epub] [--batch 20] [--jobs 2]`.
+     Подкоманда парсится всегда, но без фичи запуск даёт понятную ошибку
+     «собран без поддержки перевода» (сообщение из `main.rs`)
+102. `src/config.rs` — секция `[translate]` (`engine`, `base_url`, `batch`,
+     `jobs`) под `cfg(feature = "translate")`; ключи только через env
+     (`api_key_env`), в файле — имя переменной
+103. Тесты: `xhtml` (инлайн, сущности `&amp;`/`&#160;`, CDATA, пропуски,
+     кириллица, сбой токенов → фолбэк); `libretranslate` (сборка запроса,
+     парсинг, батчинг на фейковом `Transport`); `epub` (набор/порядок записей,
+     нетронутые идентичны, `mimetype` первым и Stored); инвариант —
+     `translate_epub` с `FakeEngine` → `parse::load` исходника и результата
+     дают те же число и `kind` блоков, `align(base, out).coverage() == 1.0`;
+     CLI-разбор подкоманды (включая сообщение без фичи); опциональный live-тест
+     с LibreTranslate за env-флагом (по умолчанию skip)
+104. README: раздел «Перевод» (оффлайн-запуск LibreTranslate/Argos, пример
+     `qbook translate`, `[translate]` в конфиге, оговорка про веса/CPU);
+     метрики: `fmt`, `clippy -D warnings` и `cargo test` для дефолта и
+     `--features translate`, `nix build` (оба варианта) — зелёные

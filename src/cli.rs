@@ -7,6 +7,9 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(version, about, name = "qbook")]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Путь к книге: epub, txt или md. Без пути открывается полка.
     pub path: Option<PathBuf>,
 
@@ -22,6 +25,35 @@ pub struct Cli {
     /// Пресет темы поверх встроенного дефолта (файл конфига перекрывает его)
     #[arg(long, value_name = "NAME", value_parser = parse_preset)]
     pub theme: Option<String>,
+}
+
+/// Подкоманды `qbook`.
+#[derive(Debug, clap::Subcommand)]
+pub enum Command {
+    /// Перевести EPUB и сохранить рядом `book.<lang>.epub`.
+    Translate(TranslateArgs),
+}
+
+/// Аргументы `qbook translate`.
+#[derive(Debug, clap::Args)]
+pub struct TranslateArgs {
+    /// Путь к книге в формате EPUB.
+    pub path: PathBuf,
+
+    /// Целевой язык перевода (ISO 639-1), например `ru`.
+    pub to: String,
+
+    /// Язык исходного текста. Без флага берётся из метаданных книги.
+    #[arg(long)]
+    pub from: Option<String>,
+
+    /// Адрес локального сервера LibreTranslate.
+    #[arg(long, default_value = "http://localhost:5000")]
+    pub server: String,
+
+    /// Имя выходного файла (по умолчанию `book.<lang>.epub` рядом с исходным).
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 fn parse_preset(raw: &str) -> Result<String, String> {
@@ -83,6 +115,59 @@ pub fn lang_from_filename(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn plain_path_is_reader_mode() {
+        let cli = Cli::try_parse_from(["qbook", "book.epub"]).expect("разобрать");
+        assert!(cli.command.is_none());
+        assert_eq!(cli.path.as_deref(), Some(Path::new("book.epub")));
+    }
+
+    #[test]
+    fn translate_subcommand_is_parsed() {
+        let cli =
+            Cli::try_parse_from(["qbook", "translate", "book.epub", "ru"]).expect("разобрать");
+        let Some(Command::Translate(args)) = cli.command else {
+            panic!("ожидалась подкоманда translate");
+        };
+        assert_eq!(args.path, Path::new("book.epub"));
+        assert_eq!(args.to, "ru");
+        assert_eq!(args.from, None);
+        assert_eq!(args.server, "http://localhost:5000");
+        assert_eq!(args.output, None);
+    }
+
+    #[test]
+    fn translate_options_are_parsed() {
+        let cli = Cli::try_parse_from([
+            "qbook",
+            "translate",
+            "book.epub",
+            "ru",
+            "--from",
+            "en",
+            "--server",
+            "http://127.0.0.1:5000",
+            "--output",
+            "out.epub",
+        ])
+        .expect("разобрать");
+        let Some(Command::Translate(args)) = cli.command else {
+            panic!("ожидалась подкоманда translate");
+        };
+        assert_eq!(args.from.as_deref(), Some("en"));
+        assert_eq!(args.server, "http://127.0.0.1:5000");
+        assert_eq!(args.output.as_deref(), Some(Path::new("out.epub")));
+    }
+
+    #[test]
+    fn options_before_path_still_work() {
+        let cli = Cli::try_parse_from(["qbook", "--lang", "en", "book.epub"]).expect("разобрать");
+        assert!(cli.command.is_none());
+        assert_eq!(cli.lang.as_deref(), Some("en"));
+        assert_eq!(cli.path.as_deref(), Some(Path::new("book.epub")));
+    }
 
     #[test]
     fn suffix_recognizes_known_language_names() {
