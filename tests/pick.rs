@@ -29,7 +29,7 @@ fn paragraphs(count: usize) -> String {
 #[test]
 fn b_opens_row_picker_moving_within_visible_area() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
+    let base = tmp.path().join("book.txt");
     write(&base, &paragraphs(30));
     let store = Store::open(tmp.path().join("qbook.db")).expect("хранилище");
     let mut app = load(&base, Some(store));
@@ -58,7 +58,7 @@ fn b_opens_row_picker_moving_within_visible_area() {
 #[test]
 fn pick_cursor_stays_within_the_visible_area() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
+    let base = tmp.path().join("book.txt");
     write(&base, &paragraphs(30));
     let store = Store::open(tmp.path().join("qbook.db")).expect("хранилище");
     let mut app = load(&base, Some(store));
@@ -77,7 +77,7 @@ fn pick_cursor_stays_within_the_visible_area() {
 #[test]
 fn v_selects_and_y_copies_rows_to_clipboard() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
+    let base = tmp.path().join("book.txt");
     write(&base, &paragraphs(30));
     let mut app = load(&base, None);
     app.set_size(40, 12);
@@ -106,7 +106,7 @@ fn v_selects_and_y_copies_rows_to_clipboard() {
 #[test]
 fn held_v_reanchors_the_selection_at_the_cursor() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
+    let base = tmp.path().join("book.txt");
     write(&base, &paragraphs(30));
     let mut app = load(&base, None);
     app.set_size(40, 12);
@@ -135,7 +135,7 @@ fn held_v_reanchors_the_selection_at_the_cursor() {
 #[test]
 fn note_marker_sits_on_the_anchored_line_across_blocks() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
+    let base = tmp.path().join("book.txt");
     write(&base, &paragraphs(10));
     let store = Store::open(tmp.path().join("qbook.db")).expect("хранилище");
     let mut app = load(&base, Some(store));

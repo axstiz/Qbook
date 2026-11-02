@@ -37,10 +37,10 @@ fn screen(app: &mut App, width: u16, height: u16) -> (Vec<String>, Buffer) {
 
 #[test]
 fn theme_flag_accepts_presets_and_rejects_the_rest() {
-    let ok = Cli::try_parse_from(["qbook", "--theme", "mono", "book.md"]).expect("mono известен");
+    let ok = Cli::try_parse_from(["qbook", "--theme", "mono", "book.txt"]).expect("mono известен");
     assert_eq!(ok.theme.as_deref(), Some("mono"));
     let err =
-        Cli::try_parse_from(["qbook", "--theme", "neon", "book.md"]).expect_err("нет пресета");
+        Cli::try_parse_from(["qbook", "--theme", "neon", "book.txt"]).expect_err("нет пресета");
     let text = err.to_string();
     assert!(text.contains("neon"), "имя в ошибке: {text}");
     assert!(text.contains("mono"), "список пресетов в ошибке: {text}");
@@ -64,7 +64,7 @@ fn overridden_key_color_reaches_the_bar() {
     let dir = dir();
     let config =
         Config { theme: Theme { key: Color::Cyan, ..Theme::default() }, ..Config::default() };
-    let mut app = app_with(&dir.path().join("book.md"), &paragraphs(30), config);
+    let mut app = app_with(&dir.path().join("book.txt"), &paragraphs(30), config);
     app.set_size(120, 10);
     app.set_scroll(0);
     let (lines, buffer) = screen(&mut app, 120, 10);
@@ -92,7 +92,7 @@ fn fade_text_switch_controls_bottom_dimming() {
     // центральная колонка, только буквенные ячейки — полоса прокрутушки
     // и боковые колонки сюда не попадают.
     let bottom_row_dim_flags = |config: Config| -> Vec<bool> {
-        let mut app = app_with(&dir.path().join("book.md"), &paragraphs(30), config);
+        let mut app = app_with(&dir.path().join("book.txt"), &paragraphs(30), config);
         app.set_size(120, 10);
         app.set_scroll(20);
         let (_, buffer) = screen(&mut app, 120, 10);
@@ -128,7 +128,7 @@ fn type_command(app: &mut App, text: &str) {
 #[test]
 fn theme_command_lists_sets_and_reports_errors() {
     let dir = dir();
-    let mut app = app_with(&dir.path().join("book.md"), &paragraphs(6), Config::default());
+    let mut app = app_with(&dir.path().join("book.txt"), &paragraphs(6), Config::default());
 
     type_command(&mut app, "theme list");
     let list = app.notice().expect("тост списка").to_owned();

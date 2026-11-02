@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod common;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use qbook::app::{App, InputPurpose, ResizeLimit};
 use qbook::store::Store;
@@ -16,8 +18,8 @@ fn write(path: &Path, text: &str) {
 
 /// Книга из `count` абзацев, каждый короче строки, и перевод с тем же числом абзацев.
 fn book_pair(dir: &Path, count: usize) -> PathBuf {
-    let base = dir.join("book.md");
-    let russian = dir.join("book.ru.md");
+    let base = dir.join("book.txt");
+    let russian = dir.join("book.ru.txt");
     let body = |lang: &str| {
         (0..count).map(|i| format!("{lang} абзац {i}")).collect::<Vec<_>>().join("\n\n")
     };
@@ -41,10 +43,10 @@ fn load(base: &Path, store: Option<Store>) -> App {
 #[test]
 fn loads_base_and_sorted_sidecar_languages() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
+    let base = tmp.path().join("book.txt");
     write(&base, "base text");
-    write(&tmp.path().join("book.fr.md"), "texte");
-    write(&tmp.path().join("book.ru.md"), "перевод");
+    write(&tmp.path().join("book.fr.txt"), "texte");
+    write(&tmp.path().join("book.ru.txt"), "перевод");
     let app = load(&base, None);
     assert_eq!(app.languages(), ["en", "fr", "ru"]);
     assert_eq!(app.current_lang(), "en");
@@ -54,7 +56,7 @@ fn loads_base_and_sorted_sidecar_languages() {
 #[test]
 fn load_auto_detects_language_from_content() {
     let tmp = dir();
-    let russian = tmp.path().join("rho_index.md");
+    let russian = tmp.path().join("rho_index.txt");
     write(&russian, "Это русский роман: глава первая, повествование кириллицей.");
     let app = App::load_auto(&russian, &[], None).expect("загрузка");
     assert_eq!(app.base_lang(), "ru", "кириллица распознаётся");
@@ -79,7 +81,7 @@ fn load_auto_prefers_the_filename_suffix_over_the_content() {
 #[test]
 fn load_auto_fixes_a_stale_base_lang_in_the_store() {
     let tmp = dir();
-    let base = tmp.path().join("story.md");
+    let base = tmp.path().join("story.txt");
     let key = base.display().to_string();
     write(&base, "Русская история с длинным кириллическим текстом.");
 
@@ -100,11 +102,11 @@ fn load_auto_fixes_a_stale_base_lang_in_the_store() {
 #[test]
 fn explicit_variant_beats_the_sidecar_with_the_same_language() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
+    let base = tmp.path().join("book.txt");
     write(&base, "base");
-    write(&tmp.path().join("book.ru.md"), "сайдкар");
-    write(&tmp.path().join("other.md"), "ЯВНЫЙ");
-    let explicit = vec![("ru".to_owned(), tmp.path().join("other.md"))];
+    write(&tmp.path().join("book.ru.txt"), "сайдкар");
+    write(&tmp.path().join("other.txt"), "ЯВНЫЙ");
+    let explicit = vec![("ru".to_owned(), tmp.path().join("other.txt"))];
     let mut app = App::load(&base, "en", &explicit, None).expect("загрузка");
     assert_eq!(app.languages(), ["en", "ru"]);
     app.switch_lang(1);
@@ -114,16 +116,16 @@ fn explicit_variant_beats_the_sidecar_with_the_same_language() {
 #[test]
 fn several_sidecars_of_one_language_become_a_single_variant_with_the_base_extension() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
-    write(&base, "# Заголовок\n\nбазовый текст\n\nповтор");
-    write(&tmp.path().join("book.ru.md"), "перевод в md");
+    let base = tmp.path().join("book.txt");
+    write(&base, "Заголовок\n\nбазовый текст\n\nповтор");
+    write(&tmp.path().join("book.ru.txt"), "перевод в md");
     write(&tmp.path().join("book.ru.txt"), "перевод в txt");
     let mut app = load(&base, None);
     assert_eq!(app.languages(), ["en", "ru"], "один вариант на язык");
 
     app.switch_lang(1);
     assert!(
-        app.document().blocks().iter().any(|b| b.text.contains("перевод в md")),
+        app.document().blocks().iter().any(|b| b.text.contains("перевод в txt")),
         "сайдкар с расширением исходника побеждает: {:?}",
         app.document().blocks().iter().map(|b| b.text.as_str()).collect::<Vec<_>>()
     );
@@ -307,8 +309,8 @@ fn language_switching_stays_under_fifty_milliseconds() {
 #[test]
 fn m2_opens_three_thousand_blocks_under_half_a_second() {
     let tmp = dir();
-    let base = tmp.path().join("big.md");
-    let translation = tmp.path().join("big.ru.md");
+    let base = tmp.path().join("big.txt");
+    let translation = tmp.path().join("big.ru.txt");
     let body = |prefix: &str| {
         (0..3000).map(|i| format!("{prefix} абзац {i}")).collect::<Vec<_>>().join("\n\n")
     };
@@ -323,18 +325,19 @@ fn m2_opens_three_thousand_blocks_under_half_a_second() {
 }
 
 /// Книга с тремя заголовками: блоки 0 (H1), 2 (H2), 4 (H1) между абзацами,
-/// и перевод с той же структурой.
+/// и перевод с той же структурой. Формат — мини-EPUB: заголовками в txt
+/// MT-разбор больше не занимается.
 fn toc_book(dir: &Path) -> PathBuf {
-    let base = dir.join("toc.md");
-    let text = |suffix: &str| {
+    let chapter = |suffix: &str| {
         format!(
-            "# Раздел 1\n\nпервый абзац{suffix}\n\n## Раздел 2\n\nвторой абзац{suffix}\n\n\
-             # Раздел 3\n\nтретий абзац{suffix}"
+            "<html><body><h1>Раздел 1</h1><p>первый абзац{suffix}</p>\
+             <h2>Раздел 2</h2><p>второй абзац{suffix}</p>\
+             <h1>Раздел 3</h1><p>третий абзац{suffix}</p></body></html>"
         )
     };
-    write(&base, &text(""));
-    write(&dir.join("toc.ru.md"), &text(" (перевод)"));
-    base
+    common::write_mini_epub(&dir.join("toc.epub"), &[chapter("")]);
+    common::write_mini_epub(&dir.join("toc.ru.epub"), &[chapter(" (перевод)")]);
+    dir.join("toc.epub")
 }
 
 #[test]
@@ -565,7 +568,7 @@ fn shift_panels_work_from_any_block_and_cyrillic_layout() {
 #[test]
 fn text_wraps_to_the_current_column_width() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
+    let base = tmp.path().join("book.txt");
     let long = "Очень длинный абзац про прогулку по вечернему городу, ".repeat(6);
     let body = (0..5).map(|i| format!("{long}{i}")).collect::<Vec<_>>().join("\n\n");
     write(&base, &body);
@@ -646,7 +649,7 @@ fn command_goto_jumps_to_the_block() {
 #[test]
 fn command_open_loads_a_path() {
     let tmp = dir();
-    let loaded = tmp.path().join("loaded.md");
+    let loaded = tmp.path().join("loaded.txt");
     write(&loaded, "target");
     let base = book_pair(tmp.path(), 4);
     let mut app = load(&base, None);
@@ -668,7 +671,7 @@ fn type_command(app: &mut App, text: &str) {
 #[test]
 fn brackets_widen_and_narrow_the_column_keeping_the_block() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
+    let base = tmp.path().join("book.txt");
     let long = "Очень длинный абзац про прогулку по вечернему городу, ".repeat(6);
     let body = (0..12).map(|i| format!("{long}{i}")).collect::<Vec<_>>().join("\n\n");
     write(&base, &body);
@@ -697,7 +700,7 @@ fn brackets_widen_and_narrow_the_column_keeping_the_block() {
 #[test]
 fn column_resize_hits_limits_and_reports_them() {
     let tmp = dir();
-    let base = tmp.path().join("book.md");
+    let base = tmp.path().join("book.txt");
     let long = "Очень длинный абзац про прогулку по вечернему городу, ".repeat(6);
     let body = (0..12).map(|i| format!("{long}{i}")).collect::<Vec<_>>().join("\n\n");
     write(&base, &body);

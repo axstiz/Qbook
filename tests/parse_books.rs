@@ -127,13 +127,14 @@ fn real_epub_nav_page_is_not_book_text() {
 #[test]
 fn plain_text_file_parses() {
     let dir = tempfile::tempdir().expect("временный каталог");
-    let path = dir.path().join("notes.md");
-    std::fs::write(&path, "# Title\n\nText with **bold**.\n\n- a\n- b\n").expect("записать");
+    let path = dir.path().join("notes.txt");
+    std::fs::write(&path, "First\n\nText with **bold**.\n\n- a\n- b\n").expect("записать");
 
     let doc = parse::load(&path, "en").expect("разобрать текст");
     assert_eq!(doc.validate(), Ok(()));
     assert_eq!(doc.title(), "notes");
-    assert_eq!(doc.blocks().len(), 4);
+    assert_eq!(doc.blocks().len(), 3, "пустая строка — граница абзаца");
+    assert!(doc.toc().is_empty(), "у txt-книги оглавление только из заголовков");
 }
 
 #[test]

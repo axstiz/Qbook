@@ -20,6 +20,8 @@ pub enum ParseError {
     },
     #[error("{path}: неподдерживаемый формат")]
     UnknownFormat { path: String },
+    #[error("{path}: markdown не поддерживается — открывайте epub или txt")]
+    Markdown { path: String },
     #[error("{path}: {problem}")]
     Malformed { path: String, problem: String },
     #[error("{path}: не удалось открыть архив: {problem}")]
@@ -34,22 +36,34 @@ pub enum Format {
 }
 
 impl Format {
-    /// Расширение важнее magic bytes: `.txt` может начинаться с `PK\x03\x04`,
-    /// а `.epub` — нет. Расширение неизвестно, смотрим содержимое.
+    /// Формат по пути без чтения файла. `md`/`markdown` дают `None`: это не
+    /// «неизвестно», а осознанное выпиливание — `load` сообщит об этом яснее.
     pub fn detect(path: &Path) -> Option<Self> {
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
         match ext.as_str() {
             "epub" => Some(Self::Epub),
-            "txt" | "md" | "markdown" | "text" => Some(Self::PlainText),
+            "txt" | "text" => Some(Self::PlainText),
+            "md" | "markdown" => None,
             _ => match magic(path) {
                 Some(magic) if magic.starts_with(b"PK\x03\x04") => Some(Self::Epub),
                 _ => None,
             },
         }
     }
+
+    /// `true`, если расширение — markdown: ошибка становится проясняющей.
+    fn is_markdown(path: &Path) -> bool {
+        matches!(path.extension().and_then(|e| e.to_str()), Some(e) if matches!(
+            e.to_ascii_lowercase().as_str(),
+            "md" | "markdown"
+        ))
+    }
 }
 
 pub fn load(path: &Path, lang: &str) -> Result<Document, ParseError> {
+    if Format::is_markdown(path) {
+        return Err(ParseError::Markdown { path: path.display().to_string() });
+    }
     let format = Format::detect(path)
         .ok_or_else(|| ParseError::UnknownFormat { path: path.display().to_string() })?;
     let doc = match format {
@@ -183,8 +197,14 @@ mod tests {
     fn detects_format_by_extension() {
         assert_eq!(Format::detect(Path::new("a.epub")), Some(Format::Epub));
         assert_eq!(Format::detect(Path::new("a.TXT")), Some(Format::PlainText));
-        assert_eq!(Format::detect(Path::new("a.md")), Some(Format::PlainText));
         assert_eq!(Format::detect(Path::new("a")), None);
+    }
+
+    #[test]
+    fn markdown_is_rejected_with_clear_error() {
+        let error = load(Path::new("/books/a.md"), "en").expect_err("markdown отклонён");
+        assert!(error.to_string().contains("markdown не поддерживается"), "ошибка: {error}");
+        assert!(detect_lang(Path::new("/books/a.md")).is_none());
     }
 
     #[test]
@@ -206,7 +226,7 @@ mod tests {
 
     #[test]
     fn detect_lang_reads_txt_content() {
-        let path = temp_path("detect").join("book.md");
+        let path = temp_path("detect").join("book.txt");
         std::fs::write(&path, "Глава. Очень длинный русский абзац.").expect("записать");
         assert_eq!(detect_lang(&path).as_deref(), Some("ru"));
         std::fs::write(&path, "Chapter. A fairly long paragraph in english.").expect("записать");

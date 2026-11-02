@@ -1,6 +1,6 @@
 # qbook
 
-Терминальная читалка для EPUB, TXT и Markdown (Rust + ratatui) в интерфейсе
+Терминальная читалка для EPUB и текста (Rust + ratatui) в интерфейсе
 btop: панели в рамках, метрики в заголовке, клавиатурный бар снизу. Синхронное
 переключение языка сохраняет позицию чтения, есть полка книг и закладки.
 
@@ -30,27 +30,27 @@ qbook --version
 ## Запуск
 
 ```sh
-qbook путь/к/книге.md    # читалка: md, txt, epub
+qbook путь/к/книге.epub   # читалка: epub, txt
 qbook                     # без пути открывается полка
-qbook demo/moon.md        # демо: подхватится перевод demo/moon.ru.md
+qbook demo/moon.epub      # демо: подхватится перевод demo/moon.ru.epub
 ```
 
 ## Переводы
 
-Автопоиск сайдкаров рядом с книгой: `книга.<lang>.{epub,txt,md}` — один вариант
+Автопоиск сайдкаров рядом с книгой: `книга.<lang>.{epub,txt}` — один вариант
 на язык; при нескольких файлах одного языка побеждает файл с тем же расширением,
 что и исходник.
 
 ```
-book.md      book.ru.md      book.de.md
-book.epub    book.ru.epub
+book.txt      book.ru.txt      book.de.txt
+book.epub     book.ru.epub
 ```
 
 Язык исходника — `--lang` (по умолчанию `en`); явные файлы перевода —
 флаг `--variant LANG=PATH` (можно повторять, он перекрывает сайдкар):
 
 ```sh
-qbook book.md --lang ru --variant en=../english/book.en.md
+qbook book.txt --lang ru --variant en=../english/book.en.txt
 ```
 
 Выравнивание абзацев — banded Needleman–Wunsch; результат кэшируется в
@@ -185,7 +185,7 @@ nix build .#with-translate
 а заданные в файле поля перекрывают пресет:
 
 ```sh
-qbook книга.md --theme mono
+qbook книга.txt --theme mono
 ```
 
 ```toml
@@ -250,12 +250,11 @@ SQLite в `$XDG_DATA_HOME/qbook/qbook.db` (обычно
 
 ## Демо (метрика M1)
 
-В `demo/` лежит пара историй — Markdown (`moon.md` + `moon.ru.md`) и EPUB
-(`moon.epub` + `moon.ru.epub`) с одинаковой структурой абзацев.
+В `demo/` лежит пара историй — EPUB (`moon.epub` + `moon.ru.epub`) с одинаковой
+структурой абзацев.
 
 ```sh
-qbook demo/moon.md     # листайте вниз и нажимайте t: абзац не должен прыгать
-qbook demo/moon.epub   # то же самое для EPUB, плюс o — оглавление из nav
+qbook demo/moon.epub   # листайте вниз и нажимайте t: абзац не должен прыгать, o — оглавление
 ```
 
 Структуру пар и оглавление обоих EPUB проверяет `cargo test --test demo`;

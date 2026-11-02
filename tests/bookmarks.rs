@@ -20,7 +20,7 @@ fn paragraphs(count: usize) -> String {
 /// Книга с `count` абзацами и открытым хранилищем.
 fn loaded(count: usize) -> (TempDir, PathBuf, App) {
     let tmp = dir();
-    let path = tmp.path().join("book.md");
+    let path = tmp.path().join("book.txt");
     std::fs::write(&path, paragraphs(count)).expect("записать");
     let store = Store::open(tmp.path().join("qbook.db")).expect("хранилище");
     let app = App::load(&path, "en", &[], Some(store)).expect("загрузка");
@@ -119,7 +119,7 @@ fn c_cycles_through_the_note_colors_in_the_panel() {
 #[test]
 fn bookmarks_without_a_store_are_noops() {
     let tmp = dir();
-    let path = tmp.path().join("book.md");
+    let path = tmp.path().join("book.txt");
     std::fs::write(&path, paragraphs(10)).expect("файл");
     let mut app = App::load(&path, "en", &[], None).expect("загрузка");
 

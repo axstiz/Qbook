@@ -26,11 +26,11 @@ fn parses_path_with_defaults() {
 fn parses_repeated_variants() {
     let cli = Cli::try_parse_from([
         "qbook",
-        "b.md",
+        "b.txt",
         "--variant",
-        "ru=b.ru.md",
+        "ru=b.ru.txt",
         "--variant",
-        "fr=b.fr.md",
+        "fr=b.fr.txt",
         "--lang",
         "de",
     ])
@@ -38,8 +38,8 @@ fn parses_repeated_variants() {
     assert_eq!(
         cli.variants,
         vec![
-            ("ru".to_owned(), PathBuf::from("b.ru.md")),
-            ("fr".to_owned(), PathBuf::from("b.fr.md")),
+            ("ru".to_owned(), PathBuf::from("b.ru.txt")),
+            ("fr".to_owned(), PathBuf::from("b.fr.txt")),
         ]
     );
     assert_eq!(cli.lang, Some("de".to_owned()));
@@ -47,7 +47,7 @@ fn parses_repeated_variants() {
 
 #[test]
 fn rejects_variant_without_path() {
-    let error = Cli::try_parse_from(["qbook", "b.md", "--variant", "ru"])
+    let error = Cli::try_parse_from(["qbook", "b.txt", "--variant", "ru"])
         .expect_err("формат lang=path обязателен");
     assert!(!error.to_string().is_empty());
 }
@@ -61,20 +61,20 @@ fn without_a_path_the_shelf_will_open() {
 #[test]
 fn sidecars_are_found_sorted_by_language() {
     let dir = temp_dir("sidecars");
-    touch(&dir.join("book.md"));
-    touch(&dir.join("book.ru.md"));
+    touch(&dir.join("book.txt"));
+    touch(&dir.join("book.ru.txt"));
     touch(&dir.join("book.fr.txt"));
     touch(&dir.join("book.es.epub"));
     touch(&dir.join("readme.md"));
     touch(&dir.join("book..md"));
     touch(&dir.join("book.zip"));
-    let found = find_sidecars(&dir.join("book.md"));
+    let found = find_sidecars(&dir.join("book.txt"));
     assert_eq!(
         found,
         vec![
             ("es".to_owned(), dir.join("book.es.epub")),
             ("fr".to_owned(), dir.join("book.fr.txt")),
-            ("ru".to_owned(), dir.join("book.ru.md")),
+            ("ru".to_owned(), dir.join("book.ru.txt")),
         ]
     );
 }
@@ -82,8 +82,8 @@ fn sidecars_are_found_sorted_by_language() {
 #[test]
 fn sidecars_require_the_same_stem() {
     let dir = temp_dir("stems");
-    touch(&dir.join("book.md"));
+    touch(&dir.join("book.txt"));
     touch(&dir.join("books.ru.md"));
     touch(&dir.join("book-ru.md"));
-    assert!(find_sidecars(&dir.join("book.md")).is_empty());
+    assert!(find_sidecars(&dir.join("book.txt")).is_empty());
 }

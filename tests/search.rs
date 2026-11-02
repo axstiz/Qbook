@@ -1,5 +1,7 @@
 //! Поиск: `/`, режимы через Tab, навигация `n`/`N` и переходы к результатам.
 
+mod common;
+
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -21,7 +23,7 @@ fn paragraphs(count: usize) -> String {
 
 fn loaded(count: usize) -> (TempDir, PathBuf, App) {
     let tmp = dir();
-    let path = tmp.path().join("book.md");
+    let path = tmp.path().join("book.txt");
     std::fs::write(&path, paragraphs(count)).expect("записать");
     let store = Store::open(tmp.path().join("qbook.db")).expect("хранилище");
     let app = App::load(&path, "en", &[], Some(store)).expect("загрузка");
@@ -133,12 +135,13 @@ fn bookmark_mode_finds_labels_and_jumps_to_them() {
 #[test]
 fn toc_mode_finds_headings() {
     let tmp = dir();
-    let base = tmp.path().join("toc.md");
-    std::fs::write(
+    let base = tmp.path().join("toc.epub");
+    common::write_mini_epub(
         &base,
-        "# Раздел первый\n\nтекст\n\n# Раздел второй\n\nещё текст\n\n# Раздел третий\n\nконец",
-    )
-    .expect("записать");
+        &["<html><body><h1>Раздел первый</h1><p>текст</p><h1>Раздел второй</h1>\
+           <p>ещё текст</p><h1>Раздел третий</h1><p>конец</p></body></html>"
+            .to_owned()],
+    );
     let mut app = App::load(&base, "en", &[], None).expect("загрузка");
     app.set_size(50, 10);
 

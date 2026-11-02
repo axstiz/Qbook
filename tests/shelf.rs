@@ -24,8 +24,8 @@ fn store_of(tmp: &TempDir) -> Store {
 
 /// Две книги в хранилище с реальными файлами; у первой фиксированная дата.
 fn seeded(tmp: &TempDir, store: &Store) -> (PathBuf, PathBuf) {
-    let a = tmp.path().join("a.md");
-    let b = tmp.path().join("b.md");
+    let a = tmp.path().join("a.txt");
+    let b = tmp.path().join("b.txt");
     write(&a, "первая книга");
     write(&b, "вторая книга");
     let a_id = store
@@ -47,7 +47,7 @@ fn shelf_lists_books_with_title_langs_percent_and_date() {
     let tmp = dir();
     let store = store_of(&tmp);
     let a = store.add_book("/books/a.md", "Война и мир", "en", 1_700_000_000, 100).expect("книга");
-    store.set_variant(a, "ru", "/books/a.ru.md", "md").expect("вариант");
+    store.set_variant(a, "ru", "/books/a.ru.txt", "md").expect("вариант");
     store.set_progress(a, Anchor::START, "en", 42.5).expect("прогресс");
 
     let app = App::shelf(Some(store), "en").expect("полка");
@@ -106,7 +106,7 @@ fn shelf_quits_on_capital_q_and_ignores_lowercase() {
 #[test]
 fn prompt_adds_a_book_and_keeps_the_shelf() {
     let tmp = dir();
-    let book = tmp.path().join("new.md");
+    let book = tmp.path().join("new.txt");
     write(&book, "свежая книга");
     let store = store_of(&tmp);
 

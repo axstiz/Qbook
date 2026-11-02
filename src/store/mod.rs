@@ -399,12 +399,24 @@ impl Store {
     }
 }
 
-/// FNV-1a по сигнатурам блоков: меняется при любой правке текста или типа блока.
+/// FNV-1a по сигнатурам блоков: меняется при любой правке текста, типа,
+/// отступа, маркера или ресурсов картинок/ссылок.
 pub fn document_hash(doc: &Document) -> u64 {
     let mut hash = FNV_OFFSET;
     for block in doc.blocks() {
         hash = fnv1a(&[kind_tag(block.kind)], hash);
+        hash = fnv1a(&[block.indent], hash);
+        if let Some(marker) = &block.marker {
+            hash = fnv1a(marker.as_bytes(), hash);
+        }
+        if let Some(image) = &block.image {
+            hash = fnv1a(image.resource.as_bytes(), hash);
+        }
         hash = fnv1a(block.text.as_bytes(), hash);
+        hash = fnv1a(&[0xff], hash);
+    }
+    for href in doc.hrefs() {
+        hash = fnv1a(href.as_bytes(), hash);
         hash = fnv1a(&[0xff], hash);
     }
     hash
@@ -429,6 +441,7 @@ fn kind_tag(kind: BlockKind) -> u8 {
         BlockKind::Verse => 5,
         BlockKind::Rule => 6,
         BlockKind::Blank => 7,
+        BlockKind::Image => 8,
     }
 }
 
