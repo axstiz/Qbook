@@ -162,9 +162,26 @@ struct Typing {
 
 struct Variant {
     lang: String,
-    doc: Document,
+    /// Путь файла варианта. У базового — `None`: его документ уже загружен.
+    path: Option<PathBuf>,
+    /// Документ. Ленивые варианты парсятся при первом переключении (`t`).
+    doc: Option<Document>,
     /// Выравнивание к базовому варианту; у базового не бывает.
     alignment: Option<Alignment>,
+}
+
+impl Variant {
+    fn loaded(lang: &str, doc: Document) -> Self {
+        Self { lang: lang.to_owned(), path: None, doc: Some(doc), alignment: None }
+    }
+
+    fn deferred(lang: &str, path: PathBuf) -> Self {
+        Self { lang: lang.to_owned(), path: Some(path), doc: None, alignment: None }
+    }
+
+    fn document(&self) -> &Document {
+        self.doc.as_ref().expect("вариант загружен")
+    }
 }
 
 pub struct App {
@@ -310,7 +327,7 @@ impl App {
         specs.sort_by(|a, b| a.0.cmp(&b.0));
 
         let title = base.title().to_owned();
-        let mut variants = vec![Variant { lang: base_lang.to_owned(), doc: base, alignment: None }];
+        let mut variants = vec![Variant::loaded(base_lang, base)];
 
         let book_id = if let Some(store) = &store {
             let (mtime, size) = file_stamp(path);
@@ -333,30 +350,21 @@ impl App {
         };
 
         for (lang, file) in specs {
-            let doc = parse::load(&file, &lang)?;
-            variants.push(Variant { lang, doc, alignment: None });
-        }
-
-        let (base_variant, rest) = variants.split_first_mut().expect("базовый вариант есть");
-        for variant in rest {
-            variant.alignment = Some(build_alignment(
-                &base_variant.doc,
-                &variant.doc,
-                &variant.lang,
-                &store,
-                book_id,
-            )?);
+            variants.push(Variant::deferred(&lang, file));
         }
 
         let saved_lang = progress.as_ref().map(|p| p.variant_lang.clone());
         let mut current = 0;
-        if let Some(lang) = saved_lang
-            && let Some(i) = variants.iter().position(|v| v.lang == lang)
+        if let Some(lang) = &saved_lang
+            && let Some(i) = variants.iter().position(|v| &v.lang == lang)
         {
             current = i;
         }
 
-        let layout = Layout::new(&variants[current].doc, DEFAULT_WIDTH - TEXT_PAD);
+        // Раскладка от базового документа; при сохранённом языке её пересоберёт
+        // `apply_layout` после ленивой загрузки ниже.
+        let base_ref = variants[0].doc.as_ref().expect("база загружена");
+        let layout = Layout::new(base_ref, DEFAULT_WIDTH - TEXT_PAD);
         let mut app = Self {
             variants,
             current,
@@ -398,6 +406,16 @@ impl App {
             search_hits: Vec::new(),
             search_index: 0,
         };
+        if current != 0 {
+            let lang = app.variants[current].lang.clone();
+            match app.ensure_variant_loaded(current) {
+                Ok(()) => app.apply_layout(Anchor::START),
+                Err(problem) => {
+                    app.current = 0;
+                    app.notice = Some(format!("{lang}: {problem}"));
+                }
+            }
+        }
         app.reload_bookmarks();
         Ok(app)
     }
@@ -416,7 +434,7 @@ impl App {
         let doc = Document::new(default_lang, "", Vec::new());
         let layout = Layout::new(&doc, DEFAULT_WIDTH - TEXT_PAD);
         let mut app = Self {
-            variants: vec![Variant { lang: default_lang.to_owned(), doc, alignment: None }],
+            variants: vec![Variant::loaded(default_lang, doc)],
             current: 0,
             scroll: 0,
             layout,
@@ -601,11 +619,11 @@ impl App {
     }
 
     pub fn title(&self) -> &str {
-        self.variants[0].doc.title()
+        self.variants[0].doc.as_ref().expect("база загружена").title()
     }
 
     pub fn document(&self) -> &Document {
-        &self.variants[self.current].doc
+        self.variants[self.current].document()
     }
 
     pub fn layout(&self) -> &Layout {
@@ -691,7 +709,8 @@ impl App {
     }
 
     /// Переключиться на вариант `index`. Якорь переводится через базу, поэтому
-    /// позиция чтения не прыгает. Вне диапазона — `false`.
+    /// позиция чтения не прыгает. Вне диапазона — `false`; ленивый вариант
+    /// парсится здесь, сбой файла — тост и прежний язык.
     pub fn switch_lang(&mut self, index: usize) -> bool {
         if index >= self.variants.len() {
             return false;
@@ -700,10 +719,38 @@ impl App {
         if index == self.current {
             return true;
         }
-        let anchor = self.translate(self.anchor(), index);
+        let lang = self.variants[index].lang.clone();
+        let anchor = match self.ensure_variant_loaded(index) {
+            Ok(()) => self.translate(self.anchor(), index),
+            Err(problem) => {
+                self.notice = Some(format!("{lang}: {problem}"));
+                self.notice_left = NOTICE_TICKS;
+                return false;
+            }
+        };
         self.current = index;
         self.apply_layout(anchor);
         true
+    }
+
+    /// Загружает документ ленивого варианта (и выравнивание к базе). Уже
+    /// загруженный — пропускается; базовый всегда готов.
+    fn ensure_variant_loaded(&mut self, index: usize) -> Result<(), String> {
+        if index >= self.variants.len() || self.variants[index].doc.is_some() {
+            return Ok(());
+        }
+        let Some(path) = self.variants[index].path.clone() else {
+            return Ok(());
+        };
+        let lang = self.variants[index].lang.clone();
+        let doc = parse::load(&path, &lang).map_err(|problem| problem.to_string())?;
+        let base_doc = self.variants[0].doc.as_ref().expect("база загружена");
+        let alignment = build_alignment(base_doc, &doc, &lang, &self.store, self.book_id)
+            .map_err(|problem| problem.to_string())?;
+        let variant = &mut self.variants[index];
+        variant.doc = Some(doc);
+        variant.alignment = Some(alignment);
+        Ok(())
     }
 
     /// Следующий язык по кругу (клавиша `t`).

@@ -816,21 +816,43 @@ fn column_limit_shows_a_hint_in_the_bar() {
     assert!(!bar.contains("предел"), "успешное сужение снимает подсказку: {bar}");
 }
 
-/// Стили спанов (`<strong>/<em>`) доходят до текста без markdown-маркеров:
-/// полный rich-рендер — блок 5 спеки, пока проверяем чистоту текста.
+/// Rich-рендер: теги `<strong>`/`<em>` красят текст настоящими модификаторами
+/// без markdown-маркеров (перепроверяем M4 на уровне буфера).
 #[test]
-fn bold_and_italic_epub_text_has_no_markdown_markers() {
+fn bold_and_italic_epub_tags_are_styled_in_the_text() {
+    use ratatui::style::Modifier;
+
     let mut app =
         app_epub(&[chapter("<p>Обычный <strong>жирный</strong> и <em>курсивный</em> текст</p>")]);
     app.set_size(80, 14);
     app.set_scroll(0);
     let (_lines, buffer) = screen(&mut app, 80, 14);
-    let y = 3u16;
-    let first_row: String = (40..64).map(|x| buffer[(x, y)].symbol()).collect();
-    assert!(first_row.contains("Обычный жирный и"), "текст без разрывов: {first_row:?}");
-    for (x, symbol) in first_row.chars().enumerate() {
-        assert_ne!(symbol, '*', "звёздочка-маркер не рендерится в {x}: {first_row:?}");
-        assert_ne!(symbol, '_', "подчёркивание-маркер не рендерится в {x}: {first_row:?}");
+    let mut bold_cells = Vec::new();
+    let mut italic_cells = Vec::new();
+    for y in 3..10u16 {
+        for x in 0..80u16 {
+            let style = buffer[(x, y)].style();
+            if style.add_modifier.contains(Modifier::BOLD) {
+                bold_cells.push((x, y));
+            }
+            if style.add_modifier.contains(Modifier::ITALIC) {
+                italic_cells.push((x, y));
+            }
+        }
+    }
+    assert!(bold_cells.len() >= 6, "жирный выделен жирным: {bold_cells:?}");
+    assert!(italic_cells.len() >= 9, "курсив выделен курсивом: {italic_cells:?}");
+    for (x, y) in bold_cells {
+        assert!(
+            !buffer[(x, y)].style().add_modifier.contains(Modifier::ITALIC),
+            "жирный не пересекается с курсивом в ({x}, {y})"
+        );
+    }
+    for (x, y) in italic_cells {
+        assert!(
+            !buffer[(x, y)].style().add_modifier.contains(Modifier::BOLD),
+            "курсив не пересекается с жирным в ({x}, {y})"
+        );
     }
 }
 

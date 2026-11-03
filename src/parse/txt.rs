@@ -1,8 +1,6 @@
 //! Плоский текст: абзацы по пустой строке.
 //!
 //! Markdown-разбор выпилен (спека v2): любые `#`/`>`/`---` — обычный текст.
-//! Переходный период: `list_marker`/`strip_heading` держатся, пока v1-парсер
-//! EPUB кладёт маркеры в текст; блок 2 переведёт оформление на `Block.marker`.
 
 use std::path::Path;
 
@@ -40,30 +38,6 @@ fn flush(pending: &mut Vec<String>, blocks: &mut Vec<Block>) {
     }
     blocks.push(Block::new(BlockKind::Paragraph, pending.join("\n")));
     pending.clear();
-}
-
-/// Маркер списка: `- `, `* `, `+ `, `1. `, `10) `.
-pub(crate) fn list_marker(line: &str) -> Option<&str> {
-    let t = line.trim_start();
-    let bullet = t.strip_prefix(['-', '*', '+']).filter(|r| r.starts_with(' ')).map(|r| &r[1..]);
-    if bullet.is_some() {
-        return Some(bullet.unwrap_or_default());
-    }
-    let digits = t.bytes().take_while(u8::is_ascii_digit).count();
-    if digits > 0 {
-        let rest = &t[digits..];
-        let marker = rest.strip_prefix(['.', ')']).filter(|r| r.starts_with(' '));
-        if marker.is_some() {
-            return marker;
-        }
-    }
-    None
-}
-
-/// `## Заголовок` -> `Заголовок`. Валидация уже прошла в `Document::validate`.
-pub fn strip_heading(text: &str) -> &str {
-    let hashes = text.bytes().take_while(|&b| b == b'#').count();
-    text.get(hashes..).map_or(text, str::trim)
 }
 
 #[cfg(test)]
@@ -112,13 +86,6 @@ mod tests {
     fn indented_lines_are_plain_text() {
         let got = blocks("  Once upon a time\n\n    let x = 1;\n");
         assert!(got.iter().all(|(kind, _)| *kind == BlockKind::Paragraph));
-    }
-
-    #[test]
-    fn marker_helpers_survive_for_ebook_parser() {
-        assert_eq!(list_marker("- one"), Some("one"));
-        assert_eq!(list_marker("10) four"), Some(" four"));
-        assert_eq!(strip_heading("## Chapter 1"), "Chapter 1");
     }
 
     #[test]

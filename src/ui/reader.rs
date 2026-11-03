@@ -16,7 +16,6 @@ use crate::app::{
 use crate::config::Theme;
 use crate::keys::{Group, corner_hints, current_bindings};
 use crate::model::{BlockKind, LineInfo};
-use crate::parse::txt::{list_marker, strip_heading};
 use crate::ui::{btop_gauge, note_color, render_corner};
 
 /// Сколько команд показываем в блоке «Команды».
@@ -310,99 +309,91 @@ fn render_text_lines(app: &App, frame: &mut Frame, area: Rect, rule_width: u16) 
 
 fn text_line(app: &App, info: &LineInfo) -> Line<'static> {
     let block = app.document().block(info.block).expect("блок из раскладки");
-    let (pad, marker, style) = decoration(block.kind);
-    let mut text = info.slice(block).trim_end().to_owned();
-    if info.line_in_block == 0 {
-        text = strip_marker(block.kind, &text);
-    }
-    let prefix = if info.line_in_block == 0 && !marker.is_empty() {
-        marker.to_owned()
-    } else {
-        " ".repeat(pad)
-    };
-    let mut spans = Vec::new();
+    // Отступы по типу блока; маркер берётся из Block.marker, у цитаты — из
+    // оформления (`▌`), префикс продолжения сохраняет ширину.
+    let (pad, decor_marker, style) = decoration(block.kind);
+    let indent = usize::from(block.indent);
+    let mut spans: Vec<Span<'static>> = Vec::new();
     if let Some(color) = app.note_line_color(info) {
         spans.push(Span::styled("▎", Style::new().fg(note_color(app.colors(), color))));
     }
-    spans.push(Span::styled(prefix, style));
-    spans.extend(style_inline(&text, style));
+    spans.push(Span::raw(" ".repeat(indent + pad)));
+    if info.line_in_block == 0 {
+        let marker = block.marker.as_deref().unwrap_or(decor_marker);
+        if !marker.is_empty() {
+            spans.push(Span::styled(format!("{marker} "), style));
+        }
+    }
+    spans.extend(styled_chunks(block, info, style));
     Line::from(spans)
 }
 
-/// Разметка усиления `**жирный**`/`__жирный__` и `*курсив*`/`_курсив_`:
-/// маркеры съедаются, текст делится на спаны с базовым стилем. `_` считается
-/// разделителем только на границах слов, чтобы не ломать `snake_case`.
-fn style_inline(text: &str, base: Style) -> Vec<Span<'static>> {
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Mark {
-        Bold,
-        Italic,
-    }
-    fn styled(text: &str, base: Style, mark: Mark) -> Span<'static> {
-        let modifier = match mark {
-            Mark::Bold => Modifier::BOLD,
-            Mark::Italic => Modifier::ITALIC,
-        };
-        Span::styled(text.to_owned(), base.add_modifier(modifier))
-    }
-    fn word_boundary(prev: Option<char>, next: Option<char>) -> bool {
-        let prev_word = prev.is_some_and(|c| c.is_alphanumeric());
-        let next_word = next.is_some_and(|c| c.is_alphanumeric());
-        prev_word ^ next_word
-    }
-    let push_plain = |out: &mut Vec<Span<'static>>, plain: &mut String| {
-        if !plain.is_empty() {
-            out.push(Span::styled(plain.clone(), base));
-            plain.clear();
+/// Спаны строки из стилей раскладки: каждый стиль — свой кусок текста; между
+/// стилизоваными диапазонами — базовое оформление. Хвост тримится, как и раньше.
+fn styled_chunks(block: &crate::model::Block, info: &LineInfo, base: Style) -> Vec<Span<'static>> {
+    let chunks = |from: usize, to: usize, style: Style, out: &mut Vec<Span<'static>>| {
+        let text = slice_block(block, from, to);
+        let text = text.trim_end();
+        if !text.is_empty() {
+            out.push(Span::styled(text.to_owned(), style));
         }
     };
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = Vec::new();
-    let mut plain = String::new();
-    let mut open: Option<(Mark, String)> = None;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let prev = (i > 0).then(|| chars[i - 1]);
-        let next = chars.get(i + 1).copied();
-        let delim = match c {
-            '*' if next == Some('*') => Some((Mark::Bold, 2)),
-            '_' if next == Some('_') && word_boundary(prev, chars.get(i + 2).copied()) => {
-                Some((Mark::Bold, 2))
-            }
-            '*' => Some((Mark::Italic, 1)),
-            '_' if word_boundary(prev, next) => Some((Mark::Italic, 1)),
-            _ => None,
-        };
-        if let Some((mark, width)) = delim {
-            match open.take() {
-                Some((open_mark, buf)) => {
-                    if !buf.is_empty() {
-                        out.push(styled(&buf, base, open_mark));
-                    }
-                }
-                None => {
-                    push_plain(&mut out, &mut plain);
-                    open = Some((mark, String::new()));
-                }
-            }
-            i += width;
-        } else {
-            if let Some((_, buf)) = open.as_mut() {
-                buf.push(c);
-            } else {
-                plain.push(c);
-            }
-            i += 1;
+    let mut out: Vec<Span<'static>> = Vec::new();
+    if info.styles.is_empty() {
+        chunks(info.start_char, info.end_char, base, &mut out);
+        return out;
+    }
+    let mut cursor = info.start_char;
+    for (range, inline) in &info.styles {
+        let start = range.start.max(info.start_char);
+        let end = range.end.min(info.end_char);
+        if start <= end && start > cursor {
+            // Диапазон без стиля между стилизоваными — базовое оформление.
+            chunks(cursor, start, base, &mut out);
+        }
+        if start < end {
+            chunks(start, end, inline_style_to(*inline, base), &mut out);
+        }
+        cursor = cursor.max(end.max(start));
+    }
+    if cursor < info.end_char {
+        chunks(cursor, info.end_char, base, &mut out);
+    }
+    if out.is_empty() {
+        let text = info.slice(block).trim_end();
+        if !text.is_empty() {
+            out.push(Span::styled(text.to_owned(), base));
         }
     }
-    if let Some((_, buf)) = open
-        && !buf.is_empty()
-    {
-        out.push(Span::styled(buf, base));
+    out
+}
+
+fn slice_block(block: &crate::model::Block, start_char: usize, end_char: usize) -> &str {
+    fn byte_at(text: &str, chars: usize) -> usize {
+        text.char_indices().nth(chars).map_or(text.len(), |(byte, _)| byte)
     }
-    push_plain(&mut out, &mut plain);
-    if out.is_empty() { vec![Span::styled(text.to_owned(), base)] } else { out }
+    let start = byte_at(&block.text, start_char);
+    let end = byte_at(&block.text, end_char);
+    &block.text[start..end]
+}
+
+/// `InlineStyle → ratatui::Style`: модификаторы; цвет живёт в теме оформления.
+fn inline_style_to(inline: crate::model::InlineStyle, base: Style) -> Style {
+    use ratatui::style::Modifier as M;
+    let mut style = base;
+    if inline.bold {
+        style = style.add_modifier(M::BOLD);
+    }
+    if inline.italic {
+        style = style.add_modifier(M::ITALIC);
+    }
+    if inline.underline {
+        style = style.add_modifier(M::UNDERLINED);
+    }
+    if inline.strike {
+        style = style.add_modifier(M::CROSSED_OUT);
+    }
+    style
 }
 
 /// Шапка книги: строка над всеми блоками с названием, языками, прогрессом,
@@ -810,23 +801,10 @@ fn langs(app: &App) -> String {
 fn decoration(kind: BlockKind) -> (usize, &'static str, Style) {
     match kind {
         BlockKind::Heading(_) => (0, "", Style::new().add_modifier(Modifier::BOLD)),
-        BlockKind::Quote => (2, "▌ ", Style::new().add_modifier(Modifier::ITALIC)),
+        BlockKind::Quote => (2, "▌", Style::new().add_modifier(Modifier::ITALIC)),
         BlockKind::Code => (2, "", Style::new().add_modifier(Modifier::DIM)),
         BlockKind::Verse => (4, "", Style::new().add_modifier(Modifier::ITALIC)),
         _ => (0, "", Style::new()),
-    }
-}
-
-/// Убирает служебную разметку первой строки блока: решётки заголовка,
-/// маркер цитаты и пункта списка.
-fn strip_marker(kind: BlockKind, text: &str) -> String {
-    match kind {
-        BlockKind::Heading(_) => strip_heading(text).to_owned(),
-        BlockKind::Quote => text
-            .strip_prefix('>')
-            .map_or_else(|| text.to_owned(), |rest| rest.trim_start().to_owned()),
-        BlockKind::ListItem => list_marker(text).unwrap_or(text).to_owned(),
-        _ => text.to_owned(),
     }
 }
 
