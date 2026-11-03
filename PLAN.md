@@ -273,8 +273,8 @@ qbook translate <книга.epub> <to> [--from LANG] [--engine libretranslate|ol
 | 1  | Модель            | `InlineStyle/Span/Block/BlockKind/ImageRef/Document`; выпил md; тесты инвариантов                    |
 | 2  | Парсер EPUB v2    | quick-xml, стили, ссылки, картинки, параллельный spine; тесты фикстур; удаление scraper              |
 | 3  | Layout v2         | оконная раскладка, перенос по спанам, `anchor↔scroll` через префиксы; бенчмарки; стык с парсером     |
-| 4  | Store             | миграция 3→4, таблицы перевода; lazy-варианты; чистка md-остатков                                   |
-| 5  | TUI v2            | btop-оболочка на новой модели, рендер spans, темы, поиск/заметки/выделение; замена `ui/reader.rs`    |
+| 4  | Store             | миграция 3→4, таблицы перевода; md-остатки чистятся сайдкаром-детектом              |
+| 5  | TUI v2            | btop-оболочка на новой модели, рендер spans, ленивые варианты (parse при первом `t`); темы; замена `ui/reader.rs`    |
 | 6  | Картинки          | полублоки в тексте (Tier 1), kitty (Tier 2), угол-превью, LRU-кэш                                    |
 | 7  | Translate CLI     | дефолт-фича, `--check/--dry-run/--jobs/--batch`, прогресс, resume-журнал; CLI-тесты                  |
 | 8  | Translate в TUI   | `:translate`, панель прогресса, тост, rescan                                                        |

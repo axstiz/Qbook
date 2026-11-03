@@ -13,12 +13,12 @@ fn fresh_database_migrates_and_survives_reopen() {
     let path = dir.path().join("qbook.db");
     {
         let store = Store::open(&path).expect("открытие");
-        assert_eq!(store.user_version().expect("версия"), 3);
+        assert_eq!(store.user_version().expect("версия"), 4, "миграции дошли до журнала перевода");
         assert!(store.list_books().expect("список пуст").is_empty());
     }
     {
         let store = Store::open(&path).expect("повторное открытие");
-        assert_eq!(store.user_version().expect("версия"), 3);
+        assert_eq!(store.user_version().expect("версия"), 4);
         assert!(store.list_books().expect("список пуст").is_empty());
     }
 }

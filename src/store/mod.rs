@@ -58,7 +58,38 @@ const MIGRATIONS: &[&str] = &[
 ",
     "ALTER TABLE progress ADD COLUMN percent REAL NOT NULL DEFAULT 0.0",
     "ALTER TABLE bookmarks ADD COLUMN color INTEGER NOT NULL DEFAULT 5",
+    // Журнал перевода (спека v2): задача + состояние каждого юнита.
+    // Позволяет перезапускам продолжать с места прерывания и показывать прогресс.
+    "
+    CREATE TABLE IF NOT EXISTS translate_jobs (
+        id INTEGER PRIMARY KEY,
+        src_path TEXT NOT NULL,
+        src_hash TEXT NOT NULL,
+        dst_path TEXT NOT NULL,
+        from_lang TEXT NOT NULL,
+        to_lang TEXT NOT NULL,
+        engine TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_translate_jobs_lookup
+        ON translate_jobs(src_hash, from_lang, to_lang, engine, base_url);
+    CREATE TABLE IF NOT EXISTS translate_units (
+        job_id INTEGER NOT NULL REFERENCES translate_jobs(id) ON DELETE CASCADE,
+        unit TEXT NOT NULL,
+        state INTEGER NOT NULL,
+        UNIQUE(job_id, unit)
+    );
+    CREATE INDEX IF NOT EXISTS idx_translate_units_pending
+        ON translate_units(job_id, state);
+",
 ];
+
+/// Состояние юнита в журнале перевода.
+pub const UNIT_PENDING: i64 = 0;
+pub const UNIT_DONE: i64 = 1;
+pub const UNIT_FAILED: i64 = 2;
 
 /// Индекс цвета заметки по умолчанию — голубой (см. палитру в `ui`).
 pub const DEFAULT_NOTE_COLOR: u8 = 5;
@@ -118,6 +149,31 @@ pub struct Bookmark {
     /// Индекс цвета из палитры [`NOTE_COLOR_COUNT`] — рисуется маркером заметки.
     pub color: u8,
     pub created_at: i64,
+}
+
+/// Ключ задачи перевода: комбинация, по которой находят resume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranslateJobSpec {
+    pub src_path: String,
+    pub src_hash: String,
+    pub dst_path: String,
+    pub from_lang: String,
+    pub to_lang: String,
+    pub engine: String,
+    pub base_url: String,
+}
+
+/// Журналируемая задача перевода (спека v2: resume + прогресс).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranslateJob {
+    pub id: i64,
+    pub src_path: String,
+    pub src_hash: String,
+    pub dst_path: String,
+    pub from_lang: String,
+    pub to_lang: String,
+    pub engine: String,
+    pub base_url: String,
 }
 
 /// Открытое хранилище. Один экземпляр = одно соединение SQLite.
@@ -252,6 +308,152 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(variants)
+    }
+
+    // --- журнал перевода ----------------------------------------------------
+
+    /// Задача перевода с той же комбинацией параметров — для resume.
+    pub fn find_translate_job(
+        &self,
+        src_hash: &str,
+        from: &str,
+        to: &str,
+        engine: &str,
+        base_url: &str,
+    ) -> Result<Option<TranslateJob>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT id, src_path, src_hash, dst_path, from_lang, to_lang, engine, base_url
+                 FROM translate_jobs
+                 WHERE src_hash = ?1 AND from_lang = ?2 AND to_lang = ?3
+                   AND engine = ?4 AND base_url = ?5
+                 ORDER BY id DESC LIMIT 1",
+                params![src_hash, from, to, engine, base_url],
+                translate_job_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Новая задача перевода.
+    pub fn create_translate_job(
+        &self,
+        spec: &TranslateJobSpec,
+    ) -> Result<TranslateJob, StoreError> {
+        let stamp = now();
+        self.conn.execute(
+            "INSERT INTO translate_jobs
+                 (src_path, src_hash, dst_path, from_lang, to_lang, engine, base_url, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            params![
+                spec.src_path,
+                spec.src_hash,
+                spec.dst_path,
+                spec.from_lang,
+                spec.to_lang,
+                spec.engine,
+                spec.base_url,
+                stamp
+            ],
+        )?;
+        self.find_translate_job(
+            &spec.src_hash,
+            &spec.from_lang,
+            &spec.to_lang,
+            &spec.engine,
+            &spec.base_url,
+        )?
+        .ok_or_else(|| StoreError::Sql(rusqlite::Error::QueryReturnedNoRows))
+    }
+
+    /// Обновляет штамп задачи (прогресс живой).
+    pub fn touch_translate_job(&self, job_id: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE translate_jobs SET updated_at = ?1 WHERE id = ?2",
+            params![now(), job_id],
+        )?;
+        Ok(())
+    }
+
+    /// Регистрирует юниты задачи как `pending`; повторные вызовы не дублируют.
+    pub fn register_translate_units(
+        &self,
+        job_id: i64,
+        units: &[String],
+    ) -> Result<(), StoreError> {
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(), StoreError> {
+            for unit in units {
+                self.conn.execute(
+                    "INSERT INTO translate_units (job_id, unit, state) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(job_id, unit) DO NOTHING",
+                    params![job_id, unit, UNIT_PENDING],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT")?,
+            Err(problem) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(problem);
+            }
+        }
+        Ok(())
+    }
+
+    /// Юниты, ждущие перевода: `pending` и переигрывающие `failed`.
+    pub fn pending_translate_units(&self, job_id: i64) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT unit FROM translate_units WHERE job_id = ?1 AND state != ?2 ORDER BY rowid",
+        )?;
+        let rows = stmt
+            .query_map(params![job_id, UNIT_DONE], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Сколько юнитов задачи готово — для прогресс-бара.
+    pub fn done_translate_units(&self, job_id: i64) -> Result<usize, StoreError> {
+        let done: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM translate_units WHERE job_id = ?1 AND state = ?2",
+            params![job_id, UNIT_DONE],
+            |row| row.get(0),
+        )?;
+        Ok(done as usize)
+    }
+
+    /// Всего зарегистрированных юнитов задачи.
+    pub fn total_translate_units(&self, job_id: i64) -> Result<usize, StoreError> {
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM translate_units WHERE job_id = ?1",
+            [job_id],
+            |row| row.get(0),
+        )?;
+        Ok(total as usize)
+    }
+
+    /// Отметка юнита: `done` или `failed` (сброс к `pending`). false — юнита нет.
+    pub fn set_translate_unit_state(
+        &self,
+        job_id: i64,
+        unit: &str,
+        state: i64,
+    ) -> Result<bool, StoreError> {
+        let rows = self.conn.execute(
+            "UPDATE translate_units SET state = ?3 WHERE job_id = ?1 AND unit = ?2",
+            params![job_id, unit, state],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Начать задачу заново: все не-`done` юниты теряют статус `failed`.
+    pub fn reset_translate_units(&self, job_id: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE translate_units SET state = ?1 WHERE job_id = ?2 AND state = ?3",
+            params![UNIT_PENDING, job_id, UNIT_FAILED],
+        )?;
+        Ok(())
     }
 
     pub fn set_progress(
@@ -458,6 +660,19 @@ fn book_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
     })
 }
 
+fn translate_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranslateJob> {
+    Ok(TranslateJob {
+        id: row.get(0)?,
+        src_path: row.get(1)?,
+        src_hash: row.get(2)?,
+        dst_path: row.get(3)?,
+        from_lang: row.get(4)?,
+        to_lang: row.get(5)?,
+        engine: row.get(6)?,
+        base_url: row.get(7)?,
+    })
+}
+
 fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
@@ -538,5 +753,82 @@ mod tests {
             encode_map(&[Some(u32::MAX as usize)]),
             Err(StoreError::CorruptAlignment)
         ));
+    }
+
+    #[test]
+    fn migrate_reaches_version_4_and_keeps_v3_data() {
+        let dir = std::env::temp_dir().join("qbook-mig4");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open_in(&dir).expect("store");
+        assert_eq!(store.user_version().expect("версия"), 4, "миграции дошли до v4");
+        let id = store.add_book("/books/a.txt", "A", "en", 1, 2).expect("книга");
+        store.set_variant(id, "ru", "/books/a.ru.txt", "txt").expect("вариант");
+        store.set_progress(id, Anchor::new(1, 0.5), "en", 7.0).expect("прогресс");
+        // Повторное открытие: миграции не перезапускаются, данные живы.
+        drop(store);
+        let store = Store::open_in(&dir).expect("повторное открытие");
+        assert_eq!(store.user_version().expect("версия"), 4);
+        let book = store.get_book(id).expect("get").expect("книга жива после апгрейда");
+        assert_eq!(book.title, "A");
+    }
+
+    #[test]
+    fn translate_journal_round_trip_and_resume() {
+        let dir = std::env::temp_dir().join("qbook-tpj");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open_in(&dir).expect("store");
+        let job = store
+            .create_translate_job(&TranslateJobSpec {
+                src_path: "/b/a.epub".into(),
+                src_hash: "hash1".into(),
+                dst_path: "/b/a.ru.epub".into(),
+                from_lang: "en".into(),
+                to_lang: "ru".into(),
+                engine: "libretranslate".into(),
+                base_url: "http://x:5000".into(),
+            })
+            .expect("задача");
+        store
+            .register_translate_units(
+                job.id,
+                &["k.xhtml#1".to_owned(), "k.xhtml#2".to_owned(), "other.xhtml#3".to_owned()],
+            )
+            .expect("регистрация");
+        store
+            .register_translate_units(job.id, &["k.xhtml#1".to_owned(), "extra.xhtml#4".to_owned()])
+            .expect("повторная");
+
+        assert_eq!(store.total_translate_units(job.id).expect("всего"), 4, "дубликаты не растут");
+        assert_eq!(store.done_translate_units(job.id).expect("готово"), 0);
+
+        // Первый юнит переведён, второй упал.
+        assert!(store.set_translate_unit_state(job.id, "k.xhtml#1", UNIT_DONE).expect("done"));
+        assert!(store.set_translate_unit_state(job.id, "k.xhtml#2", UNIT_FAILED).expect("failed"));
+        assert_eq!(store.done_translate_units(job.id).expect("готово"), 1);
+        let pending = store.pending_translate_units(job.id).expect("очередь");
+        assert_eq!(pending, ["k.xhtml#2", "other.xhtml#3", "extra.xhtml#4"]);
+
+        // Повторный запуск с той же комбинацией находит задачу и продолжает.
+        let found = store
+            .find_translate_job("hash1", "en", "ru", "libretranslate", "http://x:5000")
+            .expect("поиск")
+            .expect("найдена");
+        assert_eq!(found.id, job.id);
+        assert_eq!(found.to_lang, "ru");
+        store.reset_translate_units(job.id).expect("сброс failed");
+        assert_eq!(
+            store.pending_translate_units(job.id).expect("очередь").len(),
+            3,
+            "failed вернулся в очередь, done не трогаем"
+        );
+
+        // Другая комбинация — не резюмируется в старую задачу.
+        assert!(
+            store
+                .find_translate_job("hash1", "en", "ru", "libretranslate", "http://y:5000")
+                .expect("поиск")
+                .is_none()
+        );
+        store.touch_translate_job(job.id).expect("штамп");
     }
 }
