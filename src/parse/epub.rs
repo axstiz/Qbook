@@ -1,17 +1,24 @@
-//! EPUB: zip-архив, `container.xml` -> OPF -> spine -> XHTML.
+//! EPUB: zip-архив, `container.xml` → OPF → spine → XHTML.
 //!
-//! Текст берётся строго в порядке spine — иначе главы перемешиваются.
-//! Из разметки остаются только блочные элементы; иллюстрации и сноски отбрасываются,
-//! но сноска-обёртка `<a>` не должна рвать текст на части.
+//! Текст берётся строго в порядке spine — иначе главы перемешиваются. Разбор
+//! XHTML — потоковый на `quick-xml`: inline-стили едут в `InlineStyle`, ссылки
+//! индексируются в `Document.hrefs`, картинки становятся `BlockKind::Image`.
+//! Spine-файлы разбираются параллельно; ломаный XML одного файла пропускается.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
 
-use ego_tree::NodeRef;
-use scraper::{Html, Node, Selector};
+use quick_xml::Reader;
+use quick_xml::escape::{resolve_predefined_entity, unescape};
+use quick_xml::name::QName;
+use quick_xml::{
+    XmlVersion,
+    events::{BytesRef, BytesText, Event},
+};
 use zip::ZipArchive;
 
-use crate::model::{Block, BlockKind, Document, TocItem};
+use crate::model::{Block, BlockKind, Document, ImageRef, InlineStyle, Span, TocItem};
 use crate::parse::{ParseError, normalize_newlines};
 
 pub fn load(path: &Path) -> Result<Document, ParseError> {
@@ -28,8 +35,8 @@ pub fn detect_lang(path: &Path) -> Option<String> {
     let mut zip = ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
     let opf_path = read_container(&mut zip).ok()?;
     let opf = read_entry(&mut zip, &opf_path).ok()?;
-    let (_, lang) = metadata(&Html::parse_document(&opf));
-    (!lang.is_empty()).then_some(lang)
+    let package = Package::parse(&opf).ok()?;
+    (!package.lang.is_empty()).then_some(package.lang)
 }
 
 /// Пути контент-документов книги: тело книги, оглавление `nav`, оглавление `ncx`.
@@ -91,12 +98,16 @@ fn parse_archive<R: std::io::Read + std::io::Seek>(
         .map_err(|problem| ParseError::Malformed { path: path.to_owned(), problem })?;
     let opf_dir = parent_dir(&opf_path);
 
-    let mut blocks: Vec<Block> = Vec::new();
-    // Диапазоны блоков, занятые каждым spine-пунктом: оглавление ссылается на файл
-    // из spine, а не на индекс блока.
-    let mut spans: Vec<(String, Range<usize>)> = Vec::new();
+    // Оглавление `nav` есть в manifest, но его пункты — не текст книги.
+    let skip: Vec<&str> =
+        package.manifest.iter().filter(|item| item.is_nav).map(|item| item.id.as_str()).collect();
 
+    // Чтение архива последовательное (ZipArchive одному владельцу), разбор — параллельный.
+    let mut bodies: Vec<(String, String)> = Vec::new();
     for idref in &package.spine {
+        if skip.contains(&idref.as_str()) {
+            continue;
+        }
         let href = package
             .manifest
             .iter()
@@ -107,10 +118,38 @@ fn parse_archive<R: std::io::Read + std::io::Seek>(
                 problem: format!("spine ссылается на неизвестный idref {idref}"),
             })?;
         let full = join(&opf_dir, &percent_decode(href));
-        let Ok(xhtml) = read_entry(zip, &full) else { continue };
+        if let Ok(xhtml) = read_entry(zip, &full) {
+            bodies.push((full, xhtml));
+        }
+    }
 
+    // Чтение архива последовательное (ZipArchive одному владельцу), разбор — параллельный.
+    type RawSection = Result<Vec<RawBlock>, ParseError>;
+    let sections: Vec<(String, RawSection)> = std::thread::scope(|scope| {
+        let mut handles: Vec<(String, std::thread::ScopedJoinHandle<'_, RawSection>)> = Vec::new();
+        for (full, xhtml) in bodies {
+            let dir = parent_dir(&full);
+            let handle = scope.spawn(move || parse_xhtml(&xhtml, &dir));
+            handles.push((full, handle));
+        }
+        handles
+            .into_iter()
+            .map(|(full, handle)| (full, handle.join().expect("поток разбора")))
+            .collect()
+    });
+
+    let mut blocks: Vec<Block> = Vec::new();
+    // Диапазоны блоков, занятые каждым spine-пунктом: оглавление ссылается на файл
+    // из spine, а не на индекс блока.
+    let mut spans: Vec<(String, Range<usize>)> = Vec::new();
+    let mut hrefs: Vec<String> = Vec::new();
+    let mut href_index: HashMap<String, usize> = HashMap::new();
+    for (full, section) in sections {
+        let Ok(raw_blocks) = section else { continue };
         let start = blocks.len();
-        extract_blocks(&xhtml, &mut blocks);
+        for raw in raw_blocks {
+            blocks.push(materialize(raw, &mut hrefs, &mut href_index));
+        }
         if blocks.len() > start {
             spans.push((full, start..blocks.len()));
         }
@@ -122,7 +161,6 @@ fn parse_archive<R: std::io::Read + std::io::Seek>(
             problem: "в spine не найдено ни одного текстового блока".to_owned(),
         });
     }
-
     let toc: Vec<TocItem> = read_toc(zip, &package, &opf_dir)
         .iter()
         .filter_map(|item| {
@@ -134,36 +172,542 @@ fn parse_archive<R: std::io::Read + std::io::Seek>(
     // Оглавление есть не у всех книг: без него выводим его из блоков-заголовков,
     // как это делает разбор текста. Тогда обе ветки дают одинаковый результат.
     if toc.is_empty() {
-        Ok(Document::new(package.lang, package.title, blocks))
+        Ok(Document::with_hrefs(package.lang, package.title, blocks, hrefs))
     } else {
-        Ok(Document::with_toc(package.lang, package.title, blocks, toc))
+        Ok(Document::with_hrefs_toc(package.lang, package.title, blocks, hrefs, toc))
     }
 }
 
-fn read_toc<R: std::io::Read + std::io::Seek>(
-    zip: &mut ZipArchive<R>,
-    package: &Package,
-    opf_dir: &str,
-) -> Vec<TocEntry> {
-    let Some(doc) = &package.toc_doc else { return Vec::new() };
-    let href = join(opf_dir, &percent_decode(doc.href()));
-    // Оглавление — необязательная часть книги: если файла нет, разбор не падает.
-    let Ok(text) = read_entry(zip, &href) else { return Vec::new() };
-    match doc {
-        TocDoc::Nav(_) => nav_toc(&text),
-        TocDoc::Ncx(_) => ncx_toc(&text),
+/// Сводит «сырые» блоки секции в модельные: локальные адреса ссылок получают
+/// единый индекс в списке `Document.hrefs` (с дедупликацией по адресу).
+fn materialize(
+    raw: RawBlock,
+    hrefs: &mut Vec<String>,
+    index: &mut HashMap<String, usize>,
+) -> Block {
+    let RawBlock { kind, spans: raw_spans, indent, marker, image } = raw;
+    for span in &raw_spans {
+        let Some(href) = &span.href else { continue };
+        if !index.contains_key(href) {
+            index.insert(href.clone(), hrefs.len());
+            hrefs.push(href.clone());
+        }
+    }
+
+    if let Some(image) = image {
+        let mut block = Block::new(BlockKind::Image, image.alt.clone()).with_image(image);
+        block.indent = indent;
+        return block;
+    }
+    let model_spans = raw_spans
+        .into_iter()
+        .map(|s| {
+            let RawSpan { text, style, href } = s;
+            let style = href
+                .and_then(|href| index.get(&href).copied())
+                .map_or(style, |link| InlineStyle { link: Some(link), ..style });
+            Span::styled(text, style)
+        })
+        .collect();
+    let mut block = Block::styled(kind, model_spans);
+    block.indent = indent;
+    block.marker = marker;
+    block
+}
+
+// --- сырые блоки одного XHTML-файла ----------------------------------------
+
+struct RawSpan {
+    text: String,
+    style: InlineStyle,
+    /// Локальный адрес ссылки; глобальный индекс присваивается при слиянии секций.
+    href: Option<String>,
+}
+
+struct RawBlock {
+    kind: BlockKind,
+    spans: Vec<RawSpan>,
+    indent: u8,
+    marker: Option<String>,
+    image: Option<ImageRef>,
+}
+
+/// Открытый блок в состоянии набора.
+struct Draft {
+    kind: BlockKind,
+    spans: Vec<RawSpan>,
+    indent: u8,
+    marker: Option<String>,
+    /// Перед каждым непробельным символом решает, нужен ли пробел-разделитель:
+    /// текстовые узлы XHTML рвутся произвольными отступами разметки.
+    pending_space: bool,
+    /// Открыт `<pre>`: пробелы и `\n` значимы — collapse на лету не делается.
+    pre: bool,
+}
+
+impl Draft {
+    fn new(kind: BlockKind, indent: u8, marker: Option<String>) -> Self {
+        Self { kind, spans: Vec::new(), indent, marker, pending_space: false, pre: false }
+    }
+
+    /// Аккумулирует сырой текст: серия пробелов → один пробел на лету, отступы
+    /// pretty-print у первого текста блока подавляются. Стиль применён к тому
+    /// диапазону, на который он действовал.
+    fn push_chunks(&mut self, text: &str, style: InlineStyle, href: Option<String>) {
+        let mut plain = String::new();
+        for ch in text.chars() {
+            if ch.is_whitespace() {
+                if !plain.is_empty() {
+                    let piece = std::mem::take(&mut plain);
+                    self.push_span(&piece, style, href.clone());
+                }
+                self.pending_space = true;
+                continue;
+            }
+            if self.pending_space && !self.spans.is_empty() {
+                self.push_span(" ", style, href.clone());
+            }
+            self.pending_space = false;
+            plain.push(ch);
+        }
+        if !plain.is_empty() {
+            self.push_span(&plain, style, href);
+        }
+    }
+
+    fn push_span(&mut self, text: &str, style: InlineStyle, href: Option<String>) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(last) = self.spans.last_mut()
+            && last.style == style
+            && last.href == href
+        {
+            last.text.push_str(text);
+            return;
+        }
+        self.spans.push(RawSpan { text: text.to_owned(), style, href });
     }
 }
 
-impl TocDoc {
-    fn href(&self) -> &str {
-        match self {
-            TocDoc::Nav(href) | TocDoc::Ncx(href) => href,
+/// Дополнения стиля от одного открытого inline-элемента (`em`, `strong`, …).
+struct StyleCtx {
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strike: bool,
+    sup: bool,
+    sub: bool,
+    href: Option<String>,
+}
+
+impl StyleCtx {
+    fn plain() -> Self {
+        Self {
+            bold: false,
+            italic: false,
+            underline: false,
+            strike: false,
+            sup: false,
+            sub: false,
+            href: None,
         }
     }
 }
 
-// --- container.xml ---------------------------------------------------------
+/// Текущий эффективный стиль — объединение открытых inline-элементов; href —
+/// самый внутренний открытый якорь.
+fn current_style(stack: &[StyleCtx]) -> (InlineStyle, Option<String>) {
+    let mut style = InlineStyle::PLAIN;
+    let mut href = None;
+    for ctx in stack {
+        style.bold |= ctx.bold;
+        style.italic |= ctx.italic;
+        style.underline |= ctx.underline;
+        style.strike |= ctx.strike;
+        style.sup |= ctx.sup;
+        style.sub |= ctx.sub;
+        if ctx.href.is_some() {
+            href = ctx.href.clone();
+        }
+    }
+    (style, href)
+}
+
+/// Вложенный блочный элемент в ещё не начавшемся блоке прозрачен:
+/// `<blockquote><p>цитата</p></blockquote>` остаётся цитатой. Внутри непустого
+/// блока — уже самостоятельный, поэтому предыдущий запечатывается.
+fn switch_block(
+    blocks: &mut Vec<RawBlock>,
+    draft: Option<Draft>,
+    kind: BlockKind,
+    indent: u8,
+    marker: Option<String>,
+) -> Option<Draft> {
+    if let Some(open) = draft {
+        if open.spans.is_empty() {
+            // Прозрачность: продолжаем накопление в прежнем блоке, kind не меняется.
+            return Some(open);
+        }
+        blocks.push(finish_draft(open));
+    }
+    Some(Draft::new(kind, indent, marker))
+}
+
+/// Переводит блок из состояния набора в сырой: хвостовые чисто-пробельные спаны
+/// сбрасываются — их абзац всё равно подрежет рендер.
+fn finish_draft(mut draft: Draft) -> RawBlock {
+    draft.spans.retain(|s| !s.text.chars().all(char::is_whitespace));
+    RawBlock {
+        kind: draft.kind,
+        spans: draft.spans,
+        indent: draft.indent,
+        marker: draft.marker,
+        image: None,
+    }
+}
+
+/// Разбирает один XHTML-документ spine в сырые rich-блоки.
+fn parse_xhtml(xhtml: &str, base_dir: &str) -> Result<Vec<RawBlock>, ParseError> {
+    let mut reader = Reader::from_str(xhtml);
+
+    let mut blocks: Vec<RawBlock> = Vec::new();
+    let mut draft: Option<Draft> = None;
+    let mut inline_stack: Vec<StyleCtx> = Vec::new();
+    let mut skip = 0usize;
+    let mut list_depth = 0usize;
+    // `usize::MAX` — неупорядоченный список; прочая цифра — счётчик очередного `ol li`.
+    let mut list_counters: Vec<usize> = Vec::new();
+    let mut pre_depth = 0usize;
+
+    loop {
+        let event = reader.read_event().map_err(|e| ParseError::Malformed {
+            path: base_dir.to_owned(),
+            problem: format!("ломаный XHTML: {e}"),
+        })?;
+        let empty = matches!(&event, Event::Empty(_));
+        match event {
+            Event::Start(element) | Event::Empty(element) => {
+                let tag = local_name(&element.name());
+
+                // `image` — картинка и вне svg-контекста, и внутри skip.
+                if tag == "image"
+                    && let Some(href) = element_attr(&element, "href")
+                {
+                    if let Some(open) = draft.take() {
+                        blocks.push(finish_draft(open));
+                    }
+                    blocks.push(RawBlock {
+                        kind: BlockKind::Image,
+                        spans: Vec::new(),
+                        indent: 0,
+                        marker: None,
+                        image: Some(ImageRef {
+                            resource: resolve_href(base_dir, &href),
+                            alt: element_attr(&element, "alt").unwrap_or_default(),
+                        }),
+                    });
+                    draft = None;
+                    continue;
+                }
+                if skip > 0 {
+                    if !empty {
+                        skip += 1;
+                    }
+                    continue;
+                }
+                match tag.as_str() {
+                    "head" | "script" | "style" | "title" | "template" | "svg" => {
+                        skip += usize::from(!empty);
+                        continue;
+                    }
+                    "br" => {
+                        if let Some(open) = draft.as_mut() {
+                            let (style, href) = current_style(&inline_stack);
+                            open.push_span("\n", style, href);
+                            if !open.pre {
+                                open.pending_space = false;
+                            }
+                        }
+                        continue;
+                    }
+                    "hr" => {
+                        if let Some(open) = draft.take() {
+                            blocks.push(finish_draft(open));
+                        }
+                        blocks.push(RawBlock {
+                            kind: BlockKind::Rule,
+                            spans: Vec::new(),
+                            indent: 0,
+                            marker: None,
+                            image: None,
+                        });
+                        continue;
+                    }
+                    "img" => {
+                        // Картинка — отдельный блок: открытый текстовый закрывается.
+                        if let Some(open) = draft.take() {
+                            blocks.push(finish_draft(open));
+                        }
+                        let src = element_attr(&element, "src");
+                        let alt = element_attr(&element, "alt").unwrap_or_default();
+                        if let Some(src) = src {
+                            blocks.push(RawBlock {
+                                kind: BlockKind::Image,
+                                spans: Vec::new(),
+                                indent: 0,
+                                marker: None,
+                                image: Some(ImageRef {
+                                    resource: resolve_href(base_dir, &src),
+                                    alt,
+                                }),
+                            });
+                            draft = None;
+                        }
+                        continue;
+                    }
+                    "ol" | "ul" => {
+                        list_depth += 1;
+                        list_counters.push(if tag == "ol" { 0 } else { usize::MAX });
+                        continue;
+                    }
+                    "li" => {
+                        let indent = list_depth.saturating_sub(1).min(u8::MAX as usize) as u8;
+                        let marker = list_counters.last_mut().map(|slot| {
+                            if *slot == usize::MAX {
+                                "•".to_owned()
+                            } else {
+                                *slot += 1;
+                                format!("{}.", slot)
+                            }
+                        });
+                        draft = switch_block(
+                            &mut blocks,
+                            draft.take(),
+                            BlockKind::ListItem,
+                            indent,
+                            marker,
+                        );
+                        continue;
+                    }
+                    "pre" => {
+                        draft = switch_block(&mut blocks, draft.take(), BlockKind::Code, 0, None);
+                        if let Some(open) = draft.as_mut() {
+                            open.pre = true;
+                        }
+                        pre_depth += 1;
+                        continue;
+                    }
+                    "td" => {
+                        draft = switch_block(&mut blocks, draft.take(), BlockKind::Verse, 0, None);
+                        continue;
+                    }
+                    "dt" | "dd" | "figcaption" => {
+                        draft =
+                            switch_block(&mut blocks, draft.take(), BlockKind::Paragraph, 0, None);
+                        continue;
+                    }
+                    "p" => {
+                        draft =
+                            switch_block(&mut blocks, draft.take(), BlockKind::Paragraph, 0, None);
+                        continue;
+                    }
+                    "blockquote" => {
+                        draft = switch_block(&mut blocks, draft.take(), BlockKind::Quote, 0, None);
+                        continue;
+                    }
+                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                        let level = tag.as_bytes()[1] - b'0';
+                        draft = switch_block(
+                            &mut blocks,
+                            draft.take(),
+                            BlockKind::Heading(level),
+                            0,
+                            None,
+                        );
+                        continue;
+                    }
+                    "div" | "figure" | "table" | "tr" | "tbody" | "thead" | "body" | "html" => {
+                        continue;
+                    }
+                    _ => {}
+                }
+
+                // Inline-элементы: дополнить стиль либо пронести ссылку.
+                let ctx = match tag.as_str() {
+                    "strong" | "b" => StyleCtx { bold: true, ..StyleCtx::plain() },
+                    "em" | "i" | "dfn" | "cite" => StyleCtx { italic: true, ..StyleCtx::plain() },
+                    "u" | "ins" => StyleCtx { underline: true, ..StyleCtx::plain() },
+                    "s" | "del" | "strike" => StyleCtx { strike: true, ..StyleCtx::plain() },
+                    "sup" => StyleCtx { sup: true, ..StyleCtx::plain() },
+                    "sub" => StyleCtx { sub: true, ..StyleCtx::plain() },
+                    "a" => StyleCtx {
+                        href: element_attr(&element, "href")
+                            .map(|href| resolve_href(base_dir, &href)),
+                        ..StyleCtx::plain()
+                    },
+                    _ => StyleCtx::plain(),
+                };
+                if !empty {
+                    inline_stack.push(ctx);
+                }
+            }
+            Event::End(element) => {
+                let tag = local_name(&element.name());
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                match tag.as_str() {
+                    "ol" | "ul" => {
+                        list_depth = list_depth.saturating_sub(1);
+                        list_counters.pop();
+                    }
+                    "pre" => {
+                        pre_depth = pre_depth.saturating_sub(1);
+                        if pre_depth == 0
+                            && let Some(open) = draft.as_mut()
+                        {
+                            open.pre = false;
+                        }
+                    }
+                    "strong" | "b" | "em" | "i" | "dfn" | "cite" | "u" | "ins" | "s" | "del"
+                    | "strike" | "sup" | "sub" | "a" => {
+                        inline_stack.pop();
+                    }
+                    _ => {}
+                }
+            }
+            Event::Text(content) => {
+                if skip > 0 {
+                    continue;
+                }
+                let text = text_of(content).unwrap_or_default();
+                let (style, href) = current_style(&inline_stack);
+                if let Some(open) = draft.as_mut() {
+                    if open.pre {
+                        open.push_span(&text, style, href);
+                    } else {
+                        open.push_chunks(&text, style, href);
+                    }
+                }
+            }
+            Event::GeneralRef(reference) => {
+                if skip > 0 {
+                    continue;
+                }
+                let text = resolve_entity(&reference).to_owned();
+                let (style, href) = current_style(&inline_stack);
+                if let Some(open) = draft.as_mut() {
+                    if open.pre {
+                        open.push_span(&text, style, href);
+                    } else {
+                        open.push_chunks(&text, style, href);
+                    }
+                }
+            }
+            Event::CData(content) => {
+                if skip > 0 {
+                    continue;
+                }
+                let (style, href) = current_style(&inline_stack);
+                if let Some(open) = draft.as_mut() {
+                    open.push_span(&content.xml10_content(), style, href);
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    if let Some(open) = draft.take() {
+        blocks.push(finish_draft(open));
+    }
+    Ok(blocks)
+}
+
+/// Текст события: сущности разрешаются через `unescape`.
+fn text_of(content: BytesText<'_>) -> Result<String, String> {
+    unescape(content.as_ref()).map(|cow| cow.into_owned()).map_err(|e| e.to_string())
+}
+
+/// Тело события `&entity;`: именованные сущности — по таблице XML, числовые —
+/// сами; незнакомое оставляем как есть (это литерал, не сущность).
+fn resolve_entity(reference: &BytesRef<'_>) -> String {
+    let raw: &str = reference.as_ref();
+    if let Some(predefined) = resolve_predefined_entity(raw) {
+        return predefined.to_owned();
+    }
+    let numeric = raw
+        .strip_prefix("#x")
+        .map(|rest| (rest, 16u32))
+        .or_else(|| raw.strip_prefix("#X").map(|rest| (rest, 16u32)))
+        .or_else(|| raw.strip_prefix('#').map(|rest| (rest, 10u32)));
+    if let Some((text, radix)) = numeric
+        && let Ok(code) = u32::from_str_radix(text, radix)
+        && let Some(ch) = char::from_u32(code)
+    {
+        return ch.to_string();
+    }
+    raw.to_owned()
+}
+
+/// Значение атрибута с разрешением сущностей и нормализацией (XML 1.0).
+fn attr_value(attr: &quick_xml::events::attributes::Attribute<'_>) -> Option<String> {
+    attr.normalized_value(XmlVersion::Implicit1_0).map(|value| value.into_owned()).ok()
+}
+
+fn element_attr(element: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<String> {
+    for attr in element.attributes() {
+        let Ok(attr) = attr else { continue };
+        if attr.key.local_name().as_ref() == key
+            && let Some(value) = attr_value(&attr)
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn local_name(name: &QName<'_>) -> String {
+    name.local_name().as_ref().to_owned()
+}
+
+/// Относительный href секции → абсолютный путь внутри zip. Абсолютные схемы и
+/// голые якоря остаются как есть (в тексте книги их всё равно резолвить некуда).
+fn resolve_href(base_dir: &str, href: &str) -> String {
+    if href.is_empty() || href.starts_with('#') || href.starts_with("mailto:") {
+        return href.to_owned();
+    }
+    if let Some(at) = href.find("://")
+        && at >= 2
+    {
+        return href.to_owned();
+    }
+    collapse_path(&format!("{base_dir}{}", percent_decode(href)))
+}
+
+/// Убирает `.`/`..`-сегменты и дубли слешей, сохраняя ведущий `/` если был.
+fn collapse_path(path: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => continue,
+            ".." => {
+                segments.pop();
+            }
+            _ => segments.push(segment),
+        }
+    }
+    let mut out = String::with_capacity(path.len());
+    if path.starts_with('/') {
+        out.push('/');
+    }
+    out.push_str(&segments.join("/"));
+    out
+}
+
+// --- контейнер -------------------------------------------------------------
 
 const CONTAINER_PATH: &str = "META-INF/container.xml";
 
@@ -171,19 +715,28 @@ fn read_container<R: std::io::Read + std::io::Seek>(
     zip: &mut ZipArchive<R>,
 ) -> Result<String, ParseError> {
     let xml = read_entry(zip, CONTAINER_PATH)?;
-    let html = Html::parse_document(&xml);
-    let selector = Selector::parse("rootfile").map_err(|e| ParseError::Malformed {
-        path: CONTAINER_PATH.to_owned(),
-        problem: e.to_string(),
-    })?;
-    html.select(&selector)
-        .next()
-        .and_then(|el| el.value().attr("full-path"))
-        .map(str::to_owned)
-        .ok_or_else(|| ParseError::Malformed {
+    let mut reader = Reader::from_str(&xml);
+    loop {
+        let event = reader.read_event().map_err(|e| ParseError::Malformed {
             path: CONTAINER_PATH.to_owned(),
-            problem: "нет элемента rootfile с атрибутом full-path".into(),
-        })
+            problem: e.to_string(),
+        })?;
+        match event {
+            Event::Start(element) | Event::Empty(element) => {
+                if element.name().local_name().as_ref() == "rootfile"
+                    && let Some(path) = element_attr(&element, "full-path")
+                {
+                    return Ok(path);
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Err(ParseError::Malformed {
+        path: CONTAINER_PATH.to_owned(),
+        problem: "нет элемента rootfile с атрибутом full-path".into(),
+    })
 }
 
 // --- OPF -------------------------------------------------------------------
@@ -218,53 +771,110 @@ struct Package {
 
 impl Package {
     fn parse(opf: &str) -> Result<Self, String> {
-        let html = Html::parse_document(opf);
-        let sel = |q: &str| Selector::parse(q).map_err(|e| e.to_string());
+        #[derive(Copy, Clone, PartialEq, Eq)]
+        enum Meta {
+            Title,
+            Lang,
+        }
+        let mut title = String::new();
+        let mut lang = String::new();
+        let mut manifest: Vec<ManifestItem> = Vec::new();
+        let mut spine: Vec<String> = Vec::new();
+        let mut spine_toc: Option<String> = None;
+        let mut open_meta: Option<Meta> = None;
+        let mut buffer = String::new();
 
-        let (title, lang) = metadata(&html);
-
-        let manifest_sel = sel("item").map_err(|e| e.to_string())?;
-        let manifest: Vec<ManifestItem> = html
-            .select(&manifest_sel)
-            .map(|el| {
-                let id = el.value().attr("id").unwrap_or_default().to_owned();
-                let href = el.value().attr("href").unwrap_or_default().to_owned();
-                let is_nav = el
-                    .value()
-                    .attr("properties")
-                    .is_some_and(|props| props.split_whitespace().any(|p| p == "nav"));
-                ManifestItem { id, href, is_nav }
-            })
-            .filter(|item| !item.id.is_empty() && !item.href.is_empty())
-            .collect();
-
-        let spine_sel = sel("itemref").map_err(|e| e.to_string())?;
-        // Оглавление не читается как текст: его пункты описывают книгу, но не являются ею.
-        let skip: Vec<&str> =
-            manifest.iter().filter(|item| item.is_nav).map(|item| item.id.as_str()).collect();
-        let spine: Vec<String> = html
-            .select(&spine_sel)
-            .filter_map(|el| el.value().attr("idref"))
-            .filter(|id| !skip.contains(id))
-            .map(str::to_owned)
-            .collect();
-
-        if spine.is_empty() {
-            return Err("в OPF нет элементов itemref".into());
+        let mut reader = Reader::from_str(opf);
+        loop {
+            let event = reader.read_event().map_err(|e| e.to_string())?;
+            let empty = matches!(&event, Event::Empty(_));
+            match event {
+                Event::Start(element) | Event::Empty(element) => {
+                    match element.name().local_name().as_ref() {
+                        "title" => {
+                            if !empty && title.is_empty() {
+                                open_meta = Some(Meta::Title);
+                                buffer.clear();
+                            }
+                        }
+                        "language" => {
+                            if !empty && lang.is_empty() {
+                                open_meta = Some(Meta::Lang);
+                                buffer.clear();
+                            }
+                        }
+                        "item" => {
+                            let mut id = String::new();
+                            let mut href = String::new();
+                            let mut is_nav = false;
+                            for attr in element.attributes() {
+                                let Ok(attr) = attr else { continue };
+                                let Some(value) = attr_value(&attr) else { continue };
+                                match attr.key.local_name().as_ref() {
+                                    "id" => id = value,
+                                    "href" => href = percent_decode(&value),
+                                    "properties" => {
+                                        is_nav = value.split_whitespace().any(|p| p == "nav");
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if !id.is_empty() && !href.is_empty() {
+                                manifest.push(ManifestItem { id, href, is_nav });
+                            }
+                        }
+                        "itemref" => {
+                            if let Some(idref) = element_attr(&element, "idref") {
+                                spine.push(idref);
+                            }
+                        }
+                        "spine" => spine_toc = element_attr(&element, "toc"),
+                        _ => {}
+                    }
+                }
+                Event::Text(content) => {
+                    if let Some(_) = open_meta
+                        && let Ok(text) = text_of(content)
+                    {
+                        buffer.push_str(&text);
+                    }
+                }
+                Event::End(element) => {
+                    let tag = element.name().local_name().as_ref().to_owned();
+                    if (tag == "title" || tag == "language")
+                        && let Some(meta) = open_meta.take()
+                    {
+                        let text = buffer.trim().to_owned();
+                        match meta {
+                            Meta::Title => {
+                                if title.is_empty() {
+                                    title = text;
+                                }
+                            }
+                            Meta::Lang => {
+                                if lang.is_empty() {
+                                    lang = text;
+                                }
+                            }
+                        }
+                        buffer.clear();
+                    }
+                }
+                Event::Eof => break,
+                _ => {}
+            }
         }
 
+        // Пустой spine не ошибкой: `detect_lang` требует только метаданные;
+        // обязательность spine проверяет `parse_archive` после слияния секций.
+
         // EPUB 2 прячет оглавление в атрибуте `spine toc="ncx"`, EPUB 3 — в `properties="nav"`.
-        let ncx_id = sel("spine")
-            .ok()
-            .and_then(|s| html.select(&s).next())
-            .and_then(|spine| spine.value().attr("toc"))
-            .map(str::to_owned);
         let toc_doc = manifest
             .iter()
             .find(|item| item.is_nav)
             .map(|item| TocDoc::Nav(item.href.clone()))
             .or_else(|| {
-                let id = ncx_id.as_deref()?;
+                let id = spine_toc.as_deref()?;
                 manifest
                     .iter()
                     .find(|item| item.id == id)
@@ -275,80 +885,157 @@ impl Package {
     }
 }
 
-/// Имена элементов OPF содержат двоеточие (`dc:title`), а html5ever теряет префиксы
-/// пространств имён, поэтому метаданные читаем обходом дерева, а не CSS-селектором.
-/// Безымянные файлы без `dc:title` остаются с пустым заголовком — это норма.
-fn collect_text(node: NodeRef<'_, Node>) -> String {
-    let mut out = String::new();
-    for child in node.children() {
-        if let Some(text) = child.value().as_text() {
-            out.push_str(text);
-        }
+// --- оглавление ------------------------------------------------------------
+
+fn read_toc<R: std::io::Read + std::io::Seek>(
+    zip: &mut ZipArchive<R>,
+    package: &Package,
+    opf_dir: &str,
+) -> Vec<TocEntry> {
+    let Some(doc) = &package.toc_doc else { return Vec::new() };
+    let href = join(opf_dir, &percent_decode(doc.href()));
+    // Оглавление — необязательная часть книги: если файла нет, разбор не падает.
+    let Ok(text) = read_entry(zip, &href) else { return Vec::new() };
+    match doc {
+        TocDoc::Nav(_) => nav_toc(&text),
+        TocDoc::Ncx(_) => ncx_toc(&text),
     }
-    out
 }
 
-fn metadata(opf: &Html) -> (String, String) {
-    let mut title = String::new();
-    let mut lang = String::new();
-    for node in opf.tree.nodes() {
-        let Some(el) = node.value().as_element() else { continue };
-        let text = collect_text(node).trim().to_owned();
-        match el.name() {
-            // Префикс пространства имён приходит частью имени элемента.
-            "dc:title" | "title" => title = text,
-            "dc:language" | "language" => lang = text,
+impl TocDoc {
+    fn href(&self) -> &str {
+        match self {
+            TocDoc::Nav(href) | TocDoc::Ncx(href) => href,
+        }
+    }
+}
+
+/// `nav[type=toc]` из `nav.xhtml`. Уровень вложенности — число открытых `ol`
+/// на момент ссылки (внешний список — уровень 1).
+fn nav_toc(nav_xhtml: &str) -> Vec<TocEntry> {
+    let mut reader = Reader::from_str(nav_xhtml);
+    let mut entries: Vec<TocEntry> = Vec::new();
+    let mut ol_depth = 0usize;
+    let mut in_toc = false;
+    // Текст копится только внутри `<a>`: заголовки и прочее в nav — не названия глав.
+    let mut in_anchor = false;
+    let mut current_href: Option<String> = None;
+    let mut text = String::new();
+
+    while let Ok(event) = reader.read_event() {
+        match event {
+            Event::Start(element) => match element.name().local_name().as_ref() {
+                "nav" => {
+                    in_toc = element.attributes().any(|a| {
+                        a.is_ok_and(|a| {
+                            a.key.local_name().as_ref() == "type"
+                                && attr_value(&a).as_deref() == Some("toc")
+                        })
+                    }) || element_attr(&element, "id").is_some_and(|id| id == "toc");
+                }
+                "ol" if in_toc => ol_depth += 1,
+                "a" if in_toc => {
+                    in_anchor = true;
+                    current_href = element_attr(&element, "href");
+                }
+                _ => {}
+            },
+            Event::Empty(element) => {
+                if in_toc && element.name().local_name().as_ref() == "a" {
+                    in_anchor = true;
+                    current_href = element_attr(&element, "href");
+                }
+            }
+            Event::Text(content) => {
+                if in_toc
+                    && in_anchor
+                    && let Ok(value) = text_of(content)
+                {
+                    let fragment = value.trim();
+                    if !fragment.is_empty() {
+                        text.push_str(fragment);
+                    }
+                }
+            }
+            Event::End(element) => match element.name().local_name().as_ref() {
+                "ol" if in_toc => ol_depth = ol_depth.saturating_sub(1),
+                "a" if in_toc => {
+                    in_anchor = false;
+                    if let Some(href) = current_href.take()
+                        && !text.trim().is_empty()
+                    {
+                        entries.push(TocEntry {
+                            title: text.clone(),
+                            href,
+                            level: ol_depth.max(1) as u8,
+                        });
+                    }
+                    text.clear();
+                }
+                "nav" => in_toc = false,
+                _ => {}
+            },
+            Event::Eof => break,
             _ => {}
         }
     }
-    (title, lang)
+    entries
 }
 
-/// `nav[type=toc]` из `nav.xhtml`. Уровень вложенности даёт число `ol`-списков,
-/// внутри которых лежит ссылка. Панель оглавления в v1 не показывается,
-/// но собираем данные сразу: они нужны для перехода и для проверки структуры.
-fn nav_toc(nav_xhtml: &str) -> Vec<TocEntry> {
-    let html = Html::parse_document(nav_xhtml);
-    let Ok(nav) = Selector::parse("nav") else { return Vec::new() };
-    let Ok(anchor) = Selector::parse("a") else { return Vec::new() };
-
-    html.select(&nav)
-        .filter(|el| el.value().attr("type").is_some_and(|t| t == "toc"))
-        .flat_map(|nav| nav.select(&anchor))
-        .filter_map(|a| {
-            let title = a.text().collect::<String>();
-            let href = a.value().attr("href")?.to_owned();
-            let level = a
-                .ancestors()
-                .filter(|node| node.value().as_element().is_some_and(|el| el.name() == "ol"))
-                .count();
-            // У каждого пункта есть свой `ol`, поэтому число вложенных списков и есть уровень.
-            let level = u8::try_from(level).unwrap_or(u8::MAX).max(1);
-            (!title.trim().is_empty()).then_some(TocEntry { title, href, level })
-        })
-        .collect()
-}
-
-/// `navMap` из `toc.ncx` — оглавление EPUB 2. Уровень задаёт вложенность `navPoint`.
+/// `navMap` из `toc.ncx` — оглавление EPUB 2. Уровень задаёт глубина вложенности
+/// текущего `navPoint` (внешний пункт — уровень 1).
 fn ncx_toc(ncx_xml: &str) -> Vec<TocEntry> {
-    let html = Html::parse_document(ncx_xml);
-    let Ok(point) = Selector::parse("navpoint") else { return Vec::new() };
-    let Ok(label) = Selector::parse("text") else { return Vec::new() };
-    let Ok(src) = Selector::parse("content") else { return Vec::new() };
+    let mut reader = Reader::from_str(ncx_xml);
+    let mut entries: Vec<TocEntry> = Vec::new();
+    // Стек открытых `navPoint`: внешний пункт ждёт `text` и `content` по очереди.
+    let mut points: Vec<Option<(String, Option<String>)>> = Vec::new();
 
-    html.select(&point)
-        .filter_map(|point| {
-            let title = point.select(&label).next()?.text().collect::<String>();
-            let href = point.select(&src).next()?.value().attr("src")?.to_owned();
-            let level = point
-                .ancestors()
-                .filter(|node| node.value().as_element().is_some_and(|el| el.name() == "navpoint"))
-                .count();
-            // `ancestors()` не содержит сам элемент, поэтому верхний `navPoint` — это 1.
-            let level = u8::try_from(level).unwrap_or(u8::MAX).saturating_add(1);
-            (!title.trim().is_empty()).then_some(TocEntry { title, href, level })
-        })
-        .collect()
+    while let Ok(event) = reader.read_event() {
+        match event {
+            Event::Start(element) => {
+                if element.name().local_name().as_ref() == "navPoint" {
+                    points.push(None);
+                }
+            }
+            Event::Empty(element) => {
+                if element.name().local_name().as_ref() == "content"
+                    && let Some(src) = element_attr(&element, "src")
+                    && let Some(top) = points.last_mut()
+                    && top.is_none()
+                {
+                    *top = Some((String::new(), Some(src)));
+                }
+            }
+            Event::Text(content) => {
+                if let Ok(value) = text_of(content) {
+                    let fragment = value.trim();
+                    if fragment.is_empty() {
+                        continue;
+                    }
+                    if let Some(state) = points.last_mut()
+                        && let Some((title, _)) = state.as_mut()
+                    {
+                        if !title.is_empty() {
+                            title.push(' ');
+                        }
+                        title.push_str(fragment);
+                    }
+                }
+            }
+            Event::End(element) => {
+                if element.name().local_name().as_ref() == "navPoint"
+                    && let Some(Some((title, href))) = points.pop()
+                    && let Some(href) = href
+                    && !title.trim().is_empty()
+                {
+                    entries.push(TocEntry { title, href, level: (points.len() + 1) as u8 });
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    entries
 }
 
 /// Ссылка оглавления ведёт внутрь spine-пункта, поэтому сначала находим диапазон
@@ -364,10 +1051,17 @@ fn toc_target(
     let span = spans.iter().find(|(name, _)| *name == file).map(|(_, s)| s.clone())?;
 
     let needle = normalize_title(&entry.title);
-    // Сначала заголовок с совпадающим текстом: у него точная привязка к смыслу главы.
+    // Сначала заголовок с точно совпадающим текстом; затем заголовок, содержащий
+    // иглу (в книгах заголовки начинаются с нумерации «1.1 Первая глава»).
     span.clone()
         .find(|&i| blocks[i].kind.is_heading() && normalize_title(&blocks[i].text) == needle)
+        .or_else(|| {
+            span.clone().find(|&i| {
+                blocks[i].kind.is_heading() && normalize_title(&blocks[i].text).contains(&needle)
+            })
+        })
         .or_else(|| span.clone().find(|&i| normalize_title(&blocks[i].text) == needle))
+        .or_else(|| span.clone().find(|&i| normalize_title(&blocks[i].text).contains(&needle)))
         .or(Some(span.start))
 }
 
@@ -381,191 +1075,6 @@ fn normalize_title(title: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-// --- XHTML -> блоки --------------------------------------------------------
-
-/// Блочные элементы, которые дают самостоятельный блок документа.
-fn block_kind(tag: &str) -> Option<BlockKind> {
-    match tag {
-        "p" => Some(BlockKind::Paragraph),
-        "blockquote" => Some(BlockKind::Quote),
-        "li" => Some(BlockKind::ListItem),
-        "pre" => Some(BlockKind::Code),
-        "td" => Some(BlockKind::Verse),
-        "h1" => Some(BlockKind::Heading(1)),
-        "h2" => Some(BlockKind::Heading(2)),
-        "h3" => Some(BlockKind::Heading(3)),
-        "h4" => Some(BlockKind::Heading(4)),
-        "h5" => Some(BlockKind::Heading(5)),
-        "h6" => Some(BlockKind::Heading(6)),
-        "hr" => Some(BlockKind::Rule),
-        _ => None,
-    }
-}
-
-/// Элементы, содержимое которых не является текстом книги.
-fn is_skipped(tag: &str) -> bool {
-    matches!(tag, "script" | "style" | "head" | "svg" | "img" | "image")
-}
-
-fn extract_blocks(xhtml: &str, blocks: &mut Vec<Block>) {
-    let html = Html::parse_document(xhtml);
-    // `head` пропускается сам по себе (он в списке is_skipped), но обход от `body`
-    // заодно отсекает Doctype и комментарии.
-    let root = html
-        .tree
-        .nodes()
-        .find(|node| node.value().as_element().is_some_and(|el| el.name() == "body"))
-        .unwrap_or_else(|| html.tree.root());
-
-    let mut sink = Sink::new();
-    walk(root, &mut sink);
-    blocks.extend(sink.finish());
-}
-
-/// Накопитель блоков. Держит ровно один открытый блок: вложенные блочные элементы
-/// либо прозрачны для него, либо закрывают его и открывают следующий.
-struct Sink {
-    blocks: Vec<Block>,
-    /// Индекс блока, в который идёт текст. `None` — текст вне блочного элемента.
-    open: Option<usize>,
-}
-
-impl Sink {
-    fn new() -> Self {
-        Self { blocks: Vec::new(), open: None }
-    }
-
-    /// XHTML pretty-printed, поэтому пробелы в текстовых узлах — это отступы разметки,
-    /// а не содержание. Каждую серию пробелов схлопываем в один пробел, ничего не обрезая:
-    /// нужный пробел между `a` и `<em>b</em>` отличает «a b» от «ab».
-    fn collapse(text: &str) -> String {
-        let mut out = String::with_capacity(text.len());
-        let mut space = false;
-        for c in text.chars() {
-            if c.is_whitespace() {
-                space = true;
-                continue;
-            }
-            if space {
-                out.push(' ');
-                space = false;
-            }
-            out.push(c);
-        }
-        if space {
-            out.push(' ');
-        }
-        out
-    }
-
-    fn push_text(&mut self, text: &str) {
-        let Some(index) = self.open else { return };
-        // Отступы pretty-print у первого текста блока — шум, между словами — содержание.
-        let text = if self.blocks[index].text.is_empty() { text.trim_start() } else { text };
-        if text.is_empty() {
-            return;
-        }
-        append(&mut self.blocks[index], text);
-    }
-
-    fn break_line(&mut self) {
-        if let Some(index) = self.open {
-            append(&mut self.blocks[index], "\n");
-        }
-    }
-
-    /// Открывает блок. Блочный элемент, вложенный в ещё не начатый блок, прозрачен:
-    /// `<blockquote><p>цитата</p></blockquote>` остаётся цитатой, а не абзацем.
-    /// Вложенный блок внутри непустого — уже самостоятельный блок.
-    fn open_block(&mut self, kind: BlockKind) {
-        if self.open.is_some_and(|i| self.blocks[i].text.is_empty()) {
-            return;
-        }
-        self.blocks.push(Block::new(kind, ""));
-        self.open = Some(self.blocks.len() - 1);
-    }
-
-    /// Разделитель: не накапливает текст, но и не закрывает текущий блок.
-    fn push_filler(&mut self, kind: BlockKind) {
-        self.blocks.push(Block::new(kind, ""));
-    }
-
-    fn finish(self) -> Vec<Block> {
-        // Пустой последний блок — артефакт вложенности, а не текст.
-        self.blocks
-            .into_iter()
-            .filter(|b| !b.text.is_empty() || b.kind.is_filler())
-            .map(|mut b| {
-                // Текст дописывался по текстовым узлам, между которыми остались одиночные
-                // пробелы: `узел "…убрать. "` + узел `" "` + `узел "Рис."`. В `Code` и `Verse`
-                // отступ значим, поэтому там пробелы не трогаем. Новую строку даёт `<br>`,
-                // её сохраняем — иначе теряется разбивка стихов и адресов.
-                if !matches!(b.kind, BlockKind::Code | BlockKind::Verse) {
-                    let lines: Vec<String> = b
-                        .text
-                        .split('\n')
-                        .map(|line| {
-                            Sink::collapse(line).split_whitespace().collect::<Vec<_>>().join(" ")
-                        })
-                        .filter(|line| !line.is_empty())
-                        .collect();
-                    b.text = lines.join("\n");
-                }
-                // Текст дописывался в обход конструктора, поэтому приводим блок к виду,
-                // который гарантирует `Document::validate`.
-                b = Block::new(b.kind, std::mem::take(&mut b.text));
-                b
-            })
-            .collect()
-    }
-}
-
-/// Дописывает текст в блок и держит кэш символьной длины в согласованном состоянии.
-fn append(block: &mut Block, text: &str) {
-    let chars = block.char_len() + text.chars().count();
-    block.text.push_str(text);
-    block.set_char_len(chars);
-}
-
-fn walk(node: NodeRef<'_, Node>, sink: &mut Sink) {
-    for child in node.children() {
-        if let Some(el) = child.value().as_element() {
-            let name = el.name();
-
-            if is_skipped(name) {
-                continue;
-            }
-            if name == "br" {
-                sink.break_line();
-                continue;
-            }
-            // Инлайн-усиление `em`/`i` и `strong`/`b` сохраняется маркерами
-            // markdown — их снимает и красит рендер, как в .txt книгах.
-            if matches!(name, "em" | "i" | "strong" | "b") {
-                let mark = if matches!(name, "strong" | "b") { "**" } else { "*" };
-                sink.push_text(mark);
-                walk(child, sink);
-                sink.push_text(mark);
-                continue;
-            }
-            match block_kind(name) {
-                Some(kind) if kind.is_filler() => sink.push_filler(kind),
-                Some(kind) => sink.open_block(kind),
-                None => {}
-            }
-            walk(child, sink);
-            continue;
-        }
-
-        if let Some(text) = child.value().as_text() {
-            let collapsed = Sink::collapse(text.as_ref());
-            if !collapsed.is_empty() {
-                sink.push_text(&collapsed);
-            }
-        }
-    }
 }
 
 // --- утилиты ---------------------------------------------------------------
@@ -614,52 +1123,53 @@ fn percent_decode(s: &str) -> String {
 }
 
 #[cfg(test)]
+mod scratch {
+    #[test]
+    fn debug_nav_levels() {
+        let nav = r#"<html><nav epub:type="toc"><ol><li><a href="a">1</a><ol><li><a href="b">2</a><ol><li><a href="c">3</a></li></ol></li></ol></li></ol></nav></html>"#;
+        let entries = super::nav_toc(nav);
+        let levels: Vec<u8> = entries.iter().map(|t| t.level).collect();
+        assert_eq!(
+            levels,
+            [1, 2, 3],
+            "уровни: {:?}",
+            entries.iter().map(|t| (t.level, &t.title)).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::io::Write;
 
     use super::*;
     use crate::model::BlockKind;
+    use zip::write::SimpleFileOptions;
 
-    /// Собирает EPUB прямо в тесте: внешние фикстуры не нужны и не устаревают.
-    struct EpubBuilder {
-        files: Vec<(String, String)>,
+    /// Собирает EPUB прямо в памяти: внешние фикстуры не нужны и не устаревают.
+    fn archive(parts: Vec<(String, String)>) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for (name, body) in parts {
+            zip.start_file(name, options).expect("начать запись");
+            zip.write_all(body.as_bytes()).expect("записать");
+        }
+        zip.finish().expect("закрыть архив").into_inner()
     }
 
-    impl EpubBuilder {
-        fn new() -> Self {
-            Self { files: Vec::new() }
-        }
+    fn parse_str(parts: Vec<(String, String)>) -> Result<Document, ParseError> {
+        let buf = archive(parts);
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(buf)).expect("открыть архив");
+        parse_archive(&mut zip, "book.epub")
+    }
 
-        fn add(mut self, name: &str, body: &str) -> Self {
-            self.files.push((name.to_owned(), body.to_owned()));
-            self
-        }
-
-        fn container(opf: &str) -> Self {
-            Self::new().add(
-                "META-INF/container.xml",
-                &format!(
-                    r#"<?xml version="1.0"?>
+    fn container_for(opf_path: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?>
 <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
-  <rootfiles><rootfile full-path="{opf}" media-type="application/oebps-package+xml"/></rootfiles>
-</container>"#
-                ),
-            )
-        }
-
-        fn write(self, dir: &Path) -> std::path::PathBuf {
-            let path = dir.join("book.epub");
-            let file = std::fs::File::create(&path).expect("создать архив");
-            let mut zip = zip::ZipWriter::new(file);
-            let options: zip::write::FileOptions<()> = zip::write::FileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated);
-            for (name, body) in self.files {
-                zip.start_file(name, options).expect("начать запись");
-                zip.write_all(body.as_bytes()).expect("записать содержимое");
-            }
-            zip.finish().expect("закрыть архив");
-            path
-        }
+<rootfiles><rootfile full-path="{opf_path}"/></rootfiles></container>"#
+        )
     }
 
     fn opf(spine: &[&str], manifest: &str, lang: &str) -> String {
@@ -684,29 +1194,8 @@ mod tests {
         )
     }
 
-    fn parse_str(parts: Vec<(String, String)>) -> Result<Document, ParseError> {
-        let buf = archive(parts);
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(buf)).expect("открыть архив");
-        parse_archive(&mut zip, "book.epub")
-    }
-
-    /// Запаковывает набор файлов в zip целиком в памяти — тесты не трогают диск.
-    fn archive(parts: Vec<(String, String)>) -> Vec<u8> {
-        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        let options: zip::write::FileOptions<()> = zip::write::FileOptions::default();
-        for (name, body) in parts {
-            zip.start_file(name, options).expect("начать запись");
-            zip.write_all(body.as_bytes()).expect("записать");
-        }
-        zip.finish().expect("закрыть архив").into_inner()
-    }
-
-    const CONTAINER: &str = r#"<?xml version="1.0"?>
-<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
-<rootfiles><rootfile full-path="{PATH}"/></rootfiles></container>"#;
-
-    fn container_for(opf_path: &str) -> String {
-        CONTAINER.replace("{PATH}", opf_path)
+    fn texts(doc: &Document) -> Vec<&str> {
+        doc.blocks().iter().map(|b| b.text.as_str()).collect()
     }
 
     #[test]
@@ -726,8 +1215,7 @@ mod tests {
             ("OEBPS/ch2.xhtml".to_owned(), page("<h1>Two</h1><p>beta</p>")),
         ];
         let doc = parse_str(files).expect("разобрать");
-        let texts: Vec<&str> = doc.blocks().iter().map(|b| b.text.as_str()).collect();
-        assert_eq!(texts, ["One", "alpha", "Two", "beta"]);
+        assert_eq!(texts(&doc), ["One", "alpha", "Two", "beta"]);
         assert_eq!(doc.title(), "The Book");
         assert_eq!(doc.lang(), "en");
     }
@@ -753,49 +1241,106 @@ mod tests {
     }
 
     #[test]
-    fn skips_script_and_style_content() {
-        let xhtml = page(
-            r#"<p>keep</p><script>var x = "drop";</script><style>.a{color:red}</style><p>also</p>"#,
-        );
-        let blocks = extracted(&xhtml);
-        let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
+    fn skips_script_style_head_title() {
+        let blocks = parse_xhtml(
+            &page(
+                r#"<p>keep</p><script>var x = "drop";</script><style>.a{color:red}</style><p>also</p>"#,
+            ),
+            "",
+        )
+        .expect("разбор");
+        let texts: Vec<String> = blocks.iter().map(|b| b.spans_text()).collect();
         assert_eq!(texts, ["keep", "also"]);
     }
 
     #[test]
+    fn broken_xml_in_one_chapter_is_skipped_others_survive() {
+        let files = vec![
+            ("META-INF/container.xml".to_owned(), container_for("content.opf")),
+            (
+                "content.opf".to_owned(),
+                opf(
+                    &["a", "b"],
+                    r#"<item id="a" href="a.xhtml"/>
+<item id="b" href="b.xhtml"/>"#,
+                    "en",
+                ),
+            ),
+            ("a.xhtml".to_owned(), "<p>broken</c><p>unmatched end tag".to_owned()),
+            ("b.xhtml".to_owned(), page("<p>intact</p>")),
+        ];
+        let doc = parse_str(files).expect("ломаная секция не рушит книгу");
+        assert_eq!(texts(&doc), ["intact"]);
+    }
+
+    #[test]
     fn br_inside_paragraph_becomes_newline() {
-        let blocks = extracted(&page("<p>line one<br/>line two</p>"));
-        assert_eq!(blocks[0].text, "line one\nline two");
+        let blocks = parse_xhtml(&page("<p>line one<br/>line two</p>"), "").expect("разбор");
+        assert_eq!(blocks[0].spans_text(), "line one\nline two");
     }
 
     #[test]
     fn inline_tags_do_not_split_paragraph() {
-        let blocks = extracted(&page(r##"<p>a <em>b</em> c <a href="#fn1">d</a> e</p>"##));
+        let blocks = parse_xhtml(&page(r##"<p>a <em>b</em> c <a href="#fn1">d</a> e</p>"##), "")
+            .expect("разбор");
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].text, "a *b* c d e");
+        assert_eq!(blocks[0].spans_text(), "a b c d e");
+        assert_eq!(blocks[0].spans.iter().filter(|s| s.href.is_some()).count(), 1);
     }
 
     #[test]
-    fn em_and_strong_survive_as_inline_markers() {
-        let blocks = extracted(&page(
-            "<p>Обычный <em>курсив</em> и <strong>жирный</strong>, <b>b</b> и <i>i</i>.</p>",
-        ));
+    fn em_and_strong_become_styled_spans() {
+        let blocks = parse_xhtml(
+            &page("<p>Обычный <em>курсив</em> и <strong>жирный</strong>, <b>b</b> и <i>i</i>.</p>"),
+            "",
+        )
+        .expect("разбор");
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].text, "Обычный *курсив* и **жирный**, **b** и *i*.");
+        let gold: Vec<(&str, bool, bool)> = vec![
+            ("Обычный", false, false),
+            (" курсив", true, false),
+            (" и", false, false),
+            (" жирный", false, true),
+            (",", false, false),
+            (" b", false, true),
+            (" и", false, false),
+            (" i", true, false),
+            (".", false, false),
+        ];
+        for (span, (text, italic, bold)) in blocks[0].spans.iter().zip(&gold) {
+            assert_eq!(&span.text.as_str(), text);
+            assert_eq!(span.style.italic, *italic, "курсив в «{text}»");
+            assert_eq!(span.style.bold, *bold, "жирный в «{text}»");
+        }
+    }
+
+    #[test]
+    fn nested_italic_inside_bold_keeps_both_flags() {
+        let blocks =
+            parse_xhtml(&page("<p><strong>жирный <em>и курсив</em></strong> конец</p>"), "")
+                .expect("разбор");
+        let spans = &blocks[0].spans;
+        assert_eq!(spans.len(), 3);
+        assert!(spans[0].style.bold && !spans[0].style.italic);
+        assert!(spans[1].style.bold && spans[1].style.italic);
+        assert!(!spans[2].style.bold && !spans[2].style.italic);
     }
 
     #[test]
     fn nested_block_continues_paragraph() {
-        let blocks = extracted(&page("<div><p>outer <span>still outer</span></p></div>"));
+        let blocks = parse_xhtml(&page("<div><p>outer <span>still outer</span></p></div>"), "")
+            .expect("разбор");
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].text, "outer still outer");
+        assert_eq!(blocks[0].spans_text(), "outer still outer");
     }
 
     #[test]
     fn block_tags_map_to_kinds() {
-        let blocks = extracted(&page(
-            "<h2>H</h2><p>p</p><blockquote>q</blockquote><li>l</li><pre>c</pre><hr/>",
-        ));
+        let blocks = parse_xhtml(
+            &page("<h2>H</h2><p>p</p><blockquote>q</blockquote><li>l</li><pre>c</pre><hr/>"),
+            "",
+        )
+        .expect("разбор");
         let kinds: Vec<BlockKind> = blocks.iter().map(|b| b.kind).collect();
         assert_eq!(
             kinds,
@@ -812,14 +1357,62 @@ mod tests {
 
     #[test]
     fn entities_are_decoded() {
-        let blocks = extracted(&page("<p>a &amp; b &lt;tag&gt; &#8212; c</p>"));
-        assert_eq!(blocks[0].text, "a & b <tag> — c");
+        let blocks =
+            parse_xhtml(&page("<p>a &amp; b &lt;tag&gt; &#8212; c</p>"), "").expect("разбор");
+        assert_eq!(blocks[0].spans_text(), "a & b <tag> — c", "амперсанд, тег и тире");
+    }
+
+    #[test]
+    fn whitespace_runs_collapse_to_single_space() {
+        let blocks =
+            parse_xhtml(&page("<p>Обычный  <em>причём</em>   разделены    одним.</p>"), "")
+                .expect("разбор");
+        assert_eq!(blocks[0].spans_text(), "Обычный причём разделены одним.");
     }
 
     #[test]
     fn unicode_survives_intact() {
-        let blocks = extracted(&page("<p>Привет, мир! 日本語もね</p>"));
-        assert_eq!(blocks[0].text, "Привет, мир! 日本語もね");
+        let blocks = parse_xhtml(&page("<p>Привет, мир! 日本語もね</p>"), "").expect("разбор");
+        assert_eq!(blocks[0].spans_text(), "Привет, мир! 日本語もね");
+    }
+
+    #[test]
+    fn list_items_get_bullets_and_nested_indent() {
+        let blocks = parse_xhtml(
+            &page("<ol><li>первый<ul><li>внутри</li></ul></li><li>второй</li></ol>"),
+            "",
+        )
+        .expect("разбор");
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].spans_text(), "первый");
+        assert_eq!(blocks[0].marker.as_deref(), Some("1."));
+        assert_eq!(blocks[1].spans_text(), "внутри");
+        assert_eq!(blocks[1].indent, 1, "вложенный список с отступом");
+        assert_eq!(blocks[1].marker.as_deref(), Some("•"));
+        assert_eq!(blocks[2].spans_text(), "второй");
+        assert_eq!(blocks[2].marker.as_deref(), Some("2."));
+    }
+
+    #[test]
+    fn images_become_image_blocks() {
+        let blocks = parse_xhtml(
+            &page(r#"<p>до</p><img src="img/pic.png" alt="подпись"/><p>после</p>"#),
+            "base/",
+        )
+        .expect("разбор");
+        assert_eq!(blocks.len(), 3);
+        let image = blocks[1].image.as_ref().expect("ресурс картинки");
+        assert_eq!(image.resource, "base/img/pic.png", "href — абсолютный путь в книге");
+        assert_eq!(image.alt, "подпись");
+        assert_eq!(blocks[0].spans_text(), "до");
+        assert_eq!(blocks[2].spans_text(), "после");
+    }
+
+    #[test]
+    fn pre_keep_raw_lines() {
+        let blocks = parse_xhtml(&page("<pre>let x = 1;\nlet y = 2;</pre>"), "").expect("разбор");
+        assert_eq!(blocks[0].kind, BlockKind::Code);
+        assert_eq!(blocks[0].spans_text(), "let x = 1;\nlet y = 2;");
     }
 
     #[test]
@@ -833,6 +1426,40 @@ mod tests {
         let titles: Vec<&str> = doc.toc().iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["Intro", "Chapter Two!"]);
         assert_eq!(doc.toc()[1].block, 2);
+    }
+
+    #[test]
+    fn hrefs_across_chapters_are_global_and_deduplicated() {
+        let files = vec![
+            ("META-INF/container.xml".to_owned(), container_for("content.opf")),
+            (
+                "content.opf".to_owned(),
+                opf(
+                    &["a", "b"],
+                    r#"<item id="a" href="a.xhtml"/>
+<item id="b" href="b.xhtml"/>"#,
+                    "en",
+                ),
+            ),
+            ("a.xhtml".to_owned(), page(r#"<p><a href="sub/t.xhtml#x">первая</a></p>"#)),
+            (
+                "b.xhtml".to_owned(),
+                page(
+                    r#"<p><a href="../sub/t.xhtml#x">дубль</a> и <a href="else.html">новая</a></p>"#,
+                ),
+            ),
+        ];
+        let doc = parse_str(files).expect("разобрать");
+        assert_eq!(doc.hrefs().len(), 2, "одинаковый адрес по дедуп");
+        assert_eq!(doc.hrefs(), ["sub/t.xhtml#x", "else.html"]);
+        // Обе ссылки ведут в одну запись hrefs.
+        let links: Vec<usize> = doc
+            .blocks()
+            .iter()
+            .flat_map(|b| b.spans.iter())
+            .filter_map(|s| s.style().link)
+            .collect();
+        assert_eq!(links, [0, 0, 1]);
     }
 
     #[test]
@@ -856,10 +1483,19 @@ mod tests {
         let dir = std::env::temp_dir().join("qbook-epub-on-disk");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("каталог");
-        let path = EpubBuilder::container("OEBPS/content.opf")
-            .add("OEBPS/content.opf", &opf(&["c1"], r#"<item id="c1" href="c.xhtml"/>"#, "en"))
-            .add("OEBPS/c.xhtml", &page("<h1>T</h1><p>body</p>"))
-            .write(&dir);
+        let path = dir.join("book.epub");
+        std::fs::write(
+            &path,
+            archive(vec![
+                ("META-INF/container.xml".to_owned(), container_for("OEBPS/content.opf")),
+                (
+                    "OEBPS/content.opf".to_owned(),
+                    opf(&["c1"], r#"<item id="c1" href="c.xhtml"/>"#, "en"),
+                ),
+                ("OEBPS/c.xhtml".to_owned(), page("<h1>T</h1><p>body</p>")),
+            ]),
+        )
+        .expect("записать");
         let doc = load(&path).expect("загрузить");
         assert_eq!(doc.len(), 2);
         assert_eq!(doc.validate(), Ok(()));
@@ -881,19 +1517,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_href_collapses_relative_segments() {
+        assert_eq!(resolve_href("OEBPS/", "ch1.xhtml"), "OEBPS/ch1.xhtml");
+        assert_eq!(resolve_href("OEBPS/", "sub/../ch1.xhtml"), "OEBPS/ch1.xhtml");
+        assert_eq!(resolve_href("", "./ch1.xhtml"), "ch1.xhtml");
+        assert_eq!(resolve_href("OEBPS/", "http://example.org/page"), "http://example.org/page");
+        assert_eq!(resolve_href("OEBPS/", "#anchor"), "#anchor");
+    }
+
+    #[test]
     fn titles_normalize_for_matching() {
         assert_eq!(normalize_title("Chapter Two!"), "chapter two");
         assert_eq!(normalize_title("Chapter  Two"), "chapter two");
     }
 
-    fn extracted(xhtml: &str) -> Vec<Block> {
-        let mut blocks = Vec::new();
-        extract_blocks(xhtml, &mut blocks);
-        blocks
-    }
-
     const NAV: &str = r#"<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
   <nav epub:type="toc" id="toc"><h1>Оглавление</h1><ol>
     <li><a href="c.xhtml#one">One</a>
       <ol><li><a href="c.xhtml#one-a">One A</a></li></ol>
@@ -978,8 +1617,7 @@ mod tests {
             ("OEBPS/c.xhtml".to_owned(), page(CHAPTER)),
         ];
         let doc = parse_str(files).expect("разобрать");
-        let texts: Vec<&str> = doc.blocks().iter().map(|b| b.text.as_str()).collect();
-        assert_eq!(texts, ["One", "a", "One A", "b", "Two", "c"]);
+        assert_eq!(texts(&doc), ["One", "a", "One A", "b", "Two", "c"]);
     }
 
     #[test]
@@ -1000,5 +1638,39 @@ mod tests {
         let doc = parse_str(files).expect("разобрать");
         let titles: Vec<&str> = doc.toc().iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["One", "One A", "Two"]);
+    }
+
+    #[test]
+    fn detect_lang_reads_opf_metadata() {
+        let files = vec![
+            ("META-INF/container.xml".to_owned(), container_for("content.opf")),
+            (
+                "content.opf".to_owned(),
+                r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>q</dc:title>
+    <dc:language>ru</dc:language>
+  </metadata>
+  <manifest/>
+  <spine/>
+</package>"#
+                    .to_owned(),
+            ),
+        ];
+        let dir = std::env::temp_dir().join("qbook-epub-lang");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("каталог");
+        let path = dir.join("book.epub");
+        std::fs::write(&path, archive(files)).expect("записать");
+        assert_eq!(detect_lang(&path).as_deref(), Some("ru"));
+    }
+}
+
+#[cfg(test)]
+impl RawBlock {
+    /// Плоский текст сырого блока, как его увидит рендер: конкатенация спанов.
+    fn spans_text(&self) -> String {
+        self.spans.iter().map(|s| s.text.as_str()).collect()
     }
 }

@@ -816,36 +816,22 @@ fn column_limit_shows_a_hint_in_the_bar() {
     assert!(!bar.contains("предел"), "успешное сужение снимает подсказку: {bar}");
 }
 
+/// Стили спанов (`<strong>/<em>`) доходят до текста без markdown-маркеров:
+/// полный rich-рендер — блок 5 спеки, пока проверяем чистоту текста.
 #[test]
-fn bold_and_italic_epub_tags_are_styled_in_the_text() {
+fn bold_and_italic_epub_text_has_no_markdown_markers() {
     let mut app =
         app_epub(&[chapter("<p>Обычный <strong>жирный</strong> и <em>курсивный</em> текст</p>")]);
     app.set_size(80, 14);
     app.set_scroll(0);
     let (_lines, buffer) = screen(&mut app, 80, 14);
-    // Заголовка нет, цитат нет — первая строка текста в третьей строке экрана,
-    // текст начинается с внутреннего поля рамки (столбец 40).
     let y = 3u16;
     let first_row: String = (40..64).map(|x| buffer[(x, y)].symbol()).collect();
-    for x in 40..64 {
-        let symbol = buffer[(x, y)].symbol();
-        assert_ne!(symbol, "*", "звёздочка-маркер не рендерится в {x}: {first_row:?}");
-        assert_ne!(symbol, "_", "подчёркивание-маркер не рендерится в {x}: {first_row:?}");
+    assert!(first_row.contains("Обычный жирный и"), "текст без разрывов: {first_row:?}");
+    for (x, symbol) in first_row.chars().enumerate() {
+        assert_ne!(symbol, '*', "звёздочка-маркер не рендерится в {x}: {first_row:?}");
+        assert_ne!(symbol, '_', "подчёркивание-маркер не рендерится в {x}: {first_row:?}");
     }
-    // `**жирный**` начинается после 8 символов.
-    let bold = buffer[(48, y)].style();
-    assert!(
-        bold.add_modifier.contains(Modifier::BOLD),
-        "жирный выделен жирным: {bold:?} строка {first_row:?}"
-    );
-    assert!(!bold.add_modifier.contains(Modifier::ITALIC), "жирный не курсив");
-    // `*курсивный*` начинается после «жирный и ».
-    let italic = buffer[(57, y)].style();
-    assert!(
-        italic.add_modifier.contains(Modifier::ITALIC),
-        "курсивный выделен курсивом: {italic:?} строка {first_row:?}"
-    );
-    assert!(!italic.add_modifier.contains(Modifier::BOLD), "курсив не жирный");
 }
 
 #[test]

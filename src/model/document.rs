@@ -292,6 +292,17 @@ impl Document {
         Self::build(lang, title, blocks, toc, hrefs)
     }
 
+    /// Документ со внешним оглавлением и накопленным списком ссылок — путь EPUB v2.
+    pub fn with_hrefs_toc(
+        lang: impl Into<String>,
+        title: impl Into<String>,
+        blocks: Vec<Block>,
+        hrefs: Vec<String>,
+        toc: Vec<TocItem>,
+    ) -> Self {
+        Self::build(lang, title, blocks, toc, hrefs)
+    }
+
     fn build(
         lang: impl Into<String>,
         title: impl Into<String>,
