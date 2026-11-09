@@ -123,6 +123,9 @@ pub struct ImageRef {
     pub resource: String,
     /// Текст-замена, показывается если картинка не может быть отрисована.
     pub alt: String,
+    /// Пиксельный размер (ширина, высота) — из заголовка файла; рендер
+    /// переводит его в высоту терминальных ячеек для раскладки.
+    pub size: Option<(u32, u32)>,
 }
 
 /// Абзац документа: набор стилизованных спанов плюс оформление блока.
@@ -546,8 +549,11 @@ mod tests {
 
     #[test]
     fn image_block_carries_resource_and_alt() {
-        let block = Block::new(BlockKind::Image, "")
-            .with_image(ImageRef { resource: "img/x.png".into(), alt: "подпись".into() });
+        let block = Block::new(BlockKind::Image, "").with_image(ImageRef {
+            resource: "img/x.png".into(),
+            alt: "подпись".into(),
+            size: Some((8, 4)),
+        });
         assert_eq!(block.kind, BlockKind::Image);
         let image = block.image.as_ref().expect("ресурс");
         assert_eq!(image.resource, "img/x.png");
@@ -715,10 +721,11 @@ mod tests {
         let doc = Document::new(
             "en",
             "T",
-            vec![
-                Block::new(BlockKind::Image, "")
-                    .with_image(ImageRef { resource: "img/a.png".into(), alt: String::new() }),
-            ],
+            vec![Block::new(BlockKind::Image, "").with_image(ImageRef {
+                resource: "img/a.png".into(),
+                alt: String::new(),
+                size: None,
+            })],
         );
         assert_eq!(doc.validate(), Ok(()));
     }
@@ -734,7 +741,8 @@ mod tests {
     #[test]
     fn validate_rejects_text_block_with_resource() {
         let mut block = Block::new(BlockKind::Paragraph, "hello");
-        block.image = Some(ImageRef { resource: "img/a.png".into(), alt: String::new() });
+        block.image =
+            Some(ImageRef { resource: "img/a.png".into(), alt: String::new(), size: None });
         let doc = Document::new("en", "T", vec![block]);
         assert!(doc.validate().is_err());
     }

@@ -5,6 +5,7 @@ pub mod clip;
 pub mod config;
 pub mod event;
 pub mod keys;
+pub mod media;
 pub mod model;
 pub mod parse;
 pub mod store;

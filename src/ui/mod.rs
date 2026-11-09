@@ -75,7 +75,7 @@ pub fn btop_gauge(theme: &Theme, percentage: f32, width: usize) -> Line<'static>
 }
 
 /// Точка входа рендера: полка либо btop-оболочка читалки.
-pub fn render(app: &App, frame: &mut Frame) {
+pub fn render(app: &mut App, frame: &mut Frame) {
     if app.screen() == Screen::Shelf {
         shelf::render(app, frame);
         return;

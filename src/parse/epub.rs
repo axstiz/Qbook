@@ -155,6 +155,14 @@ fn parse_archive<R: std::io::Read + std::io::Seek>(
         }
     }
 
+    // Пиксельные размеры картинок — для высоты ячеек в раскладке; сбой чтения
+    // ресурса не валит книгу, картинка останется с alt-текстом.
+    for block in &mut blocks {
+        let Some(image) = block.image.as_ref() else { continue };
+        block.image =
+            Some(ImageRef { size: image_dimensions(zip, &image.resource), ..image.clone() });
+    }
+
     if blocks.is_empty() {
         return Err(ParseError::Malformed {
             path: path.to_owned(),
@@ -405,6 +413,7 @@ fn parse_xhtml(xhtml: &str, base_dir: &str) -> Result<Vec<RawBlock>, ParseError>
                         image: Some(ImageRef {
                             resource: resolve_href(base_dir, &href),
                             alt: element_attr(&element, "alt").unwrap_or_default(),
+                            size: None,
                         }),
                     });
                     draft = None;
@@ -460,6 +469,7 @@ fn parse_xhtml(xhtml: &str, base_dir: &str) -> Result<Vec<RawBlock>, ParseError>
                                 image: Some(ImageRef {
                                     resource: resolve_href(base_dir, &src),
                                     alt,
+                                    size: None,
                                 }),
                             });
                             draft = None;
@@ -1075,6 +1085,22 @@ fn normalize_title(title: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Пиксельный размер изображения из первых 64 КиБ ресурса.
+fn image_dimensions<R: std::io::Read + std::io::Seek>(
+    zip: &mut ZipArchive<R>,
+    path: &str,
+) -> Option<(u32, u32)> {
+    use std::io::Read as _;
+    let mut entry = zip.by_name(path).ok()?;
+    let mut head = Vec::new();
+    (&mut entry).take(64 * 1024).read_to_end(&mut head).ok()?;
+    image::ImageReader::new(std::io::Cursor::new(&head))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 // --- утилиты ---------------------------------------------------------------

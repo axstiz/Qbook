@@ -15,7 +15,9 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::{Block, Document, InlineStyle};
+use super::{Block, BlockKind, Document, InlineStyle};
+use crate::config::ImagesMode;
+use crate::media;
 
 /// Одна строка на экране: диапазон символов `[start_char, end_char)` внутри блока.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,8 +62,16 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Раскладка с включёнными картинками (полублоки). Все вызовы, где режим
+    /// не важен, идут через неё.
     pub fn new(doc: &Document, width: u16) -> Self {
         // Нулевая ширина зациклила бы перенос: рисуем строку в один символ.
+        Self::with_media(doc, width, ImagesMode::Half)
+    }
+
+    /// Раскладка с режимом картинок: `Off` — только alt-текст у Image-блока,
+    /// `Half` — плюс пиксельные строки по размеру ресурса.
+    pub fn with_media(doc: &Document, width: u16, images: ImagesMode) -> Self {
         let width = width.max(1);
         let cells = usize::from(width);
         let mut lines: Vec<LineInfo> = Vec::new();
@@ -83,6 +93,24 @@ impl Layout {
                     styles: intersect_styles(&shared, range.clone()),
                 });
                 gap = range.start < range.end;
+            }
+            // Пиксельные строки картинки: `line_in_block ≥ 1` — их индекс
+            // для рендера. Настраиваются от ширины колонки.
+            if item.kind == BlockKind::Image
+                && let Some(image) = item.image.as_ref()
+                && let Some((image_w, image_h)) = image.size
+                && images == ImagesMode::Half
+            {
+                let rows = media::image_rows_pixels(image_w, image_h, u32::from(width));
+                for index in 1..=rows {
+                    lines.push(LineInfo {
+                        block,
+                        line_in_block: index as usize,
+                        start_char: 0,
+                        end_char: 0,
+                        styles: Vec::new(),
+                    });
+                }
             }
             // Отступ между абзацами: пустая строка после блока, чья последняя
             // строка непуста. Пустые блоки и блоки с концевым \n её не получают —

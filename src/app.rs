@@ -7,8 +7,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::align::{Alignment, align};
 use crate::cli::{find_sidecars, lang_from_filename};
-use crate::config::{Config, Theme};
+use crate::config::{Config, ImagesMode, Theme};
 use crate::keys::{KeyCmd, current_bindings, match_key};
+use crate::media::{CACHE_CAP_BYTES, Media, Resources, ZipResources};
 use crate::model::{Anchor, Block, Document, Layout, LineInfo, anchor_to_scroll, scroll_to_anchor};
 use crate::parse;
 use crate::store::{Bookmark, DEFAULT_NOTE_COLOR, Store, StoreError, document_hash};
@@ -193,6 +194,12 @@ pub struct App {
     height: u16,
     store: Option<Store>,
     book_id: Option<i64>,
+    /// Картинки книги: декод и полублочные ячейки с LRU-кэшем.
+    media: Media,
+    /// Ресурсы контейнера (EPUB): байты картинок по пути ресурса.
+    resources: Option<ZipResources>,
+    /// Путь отрисовки ячеек рассматривается от path: нужен при переключении языка.
+    resources_path: Option<PathBuf>,
     /// Позиция из хранилища: применяется к первой раскладке, ещё до `set_size`.
     pending_anchor: Option<Anchor>,
     quit: bool,
@@ -374,6 +381,9 @@ impl App {
             height: DEFAULT_HEIGHT,
             store,
             book_id,
+            media: Media::new(CACHE_CAP_BYTES),
+            resources: None,
+            resources_path: None,
             pending_anchor: progress.map(|p| p.anchor),
             quit: false,
             last_save: Instant::now(),
@@ -406,6 +416,8 @@ impl App {
             search_hits: Vec::new(),
             search_index: 0,
         };
+        // Ресурсы картинок: EPUB несёт их в открытом zip-контейнере.
+        app.reopen_resources(path);
         if current != 0 {
             let lang = app.variants[current].lang.clone();
             match app.ensure_variant_loaded(current) {
@@ -442,6 +454,9 @@ impl App {
             height: DEFAULT_HEIGHT,
             store,
             book_id: None,
+            media: Media::new(CACHE_CAP_BYTES),
+            resources: None,
+            resources_path: None,
             pending_anchor: None,
             quit: false,
             last_save: Instant::now(),
@@ -686,7 +701,12 @@ impl App {
 
     /// Перестроить раскладку под текущую ширину переноса и вернуть якорь на место.
     fn apply_layout(&mut self, anchor: Anchor) {
-        self.layout = Layout::new(self.document(), self.wrap_width());
+        let mode = if self.config.defaults.images == ImagesMode::Off {
+            ImagesMode::Off
+        } else {
+            ImagesMode::Half
+        };
+        self.layout = Layout::with_media(self.document(), self.wrap_width(), mode);
         self.scroll = anchor_to_scroll(&self.layout, self.document(), anchor);
     }
 
@@ -750,7 +770,42 @@ impl App {
         let variant = &mut self.variants[index];
         variant.doc = Some(doc);
         variant.alignment = Some(alignment);
+        self.reopen_resources(&path);
         Ok(())
+    }
+
+    /// Открыть ресурсы контейнера (картинки EPUB): файл-варианта. Кэш ячеек
+    /// сбрасывается — картинка своя в каждом варианте.
+    fn reopen_resources(&mut self, path: &Path) {
+        let is_epub = parse::Format::detect(path) == Some(parse::Format::Epub);
+        let same = self.resources_path.as_deref() == Some(path);
+        if is_epub && !same {
+            self.resources = ZipResources::open(path);
+            self.resources_path = Some(path.to_path_buf());
+            self.media.clear();
+        } else if !is_epub {
+            self.resources = None;
+            self.resources_path = None;
+            self.media.clear();
+        }
+    }
+
+    /// Ячейки half-block картинки блока (кэш по «ресурс × колонки × строки»).
+    pub fn image_cells(&mut self, block: usize) -> Option<&[Vec<crate::media::HalfCell>]> {
+        if self.config().defaults.images == ImagesMode::Off {
+            return None;
+        }
+        let image = self.document().block(block)?.image.clone()?;
+        let (image_w, image_h) = image.size?;
+        let cols = self.wrap_width() as u32;
+        let rows = crate::media::image_rows_pixels(image_w, image_h, cols);
+        if rows == 0 {
+            return None;
+        }
+        let resources = &mut self.resources;
+        self.media.cells(&image.resource, cols, rows, &mut |name| {
+            resources.as_mut().and_then(|res| res.read_bytes(name))
+        })
     }
 
     /// Следующий язык по кругу (клавиша `t`).

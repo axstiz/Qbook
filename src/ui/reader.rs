@@ -94,7 +94,7 @@ fn bar_hint(app: &App, wide: bool) -> Line<'static> {
     Line::from(spans)
 }
 
-pub fn render(app: &App, frame: &mut Frame) {
+pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -214,7 +214,7 @@ fn split_columns(
     }
 }
 
-fn render_text(app: &App, frame: &mut Frame, area: Rect, active: bool) {
+fn render_text(app: &mut App, frame: &mut Frame, area: Rect, active: bool) {
     let inner = Rect {
         x: area.x + 1 + TEXT_INDENT,
         y: area.y + 1,
@@ -239,9 +239,67 @@ fn render_text(app: &App, frame: &mut Frame, area: Rect, active: bool) {
             &mut state,
         );
     }
+    // Картинки рисуются поверх: ячейки `▀` с fg/bg на пиксельные строки.
+    paint_image_rows(app, frame, text_area);
     frame.render_widget(block_frame(app.colors(), "1", text_title(app, area.width), active), area);
     if app.config().defaults.fade_text {
         fade_bottom(frame, inner, app.colors());
+    }
+}
+
+/// Пиксельные строки Image-блоков в видимой области: ячейки half-block
+/// поверх пустых строк буфера.
+fn paint_image_rows(app: &mut App, frame: &mut Frame, area: Rect) {
+    let rows: Vec<(usize, usize)> = app
+        .layout()
+        .lines()
+        .iter()
+        .enumerate()
+        .skip(app.scroll())
+        .take(area.height as usize)
+        .filter_map(|(index, info)| {
+            let block = app.document().block(info.block)?;
+            (block.kind == BlockKind::Image && info.line_in_block > 0)
+                .then_some((index - app.scroll(), info.block))
+        })
+        .collect();
+    for (row, block) in rows {
+        let y = area.y + row as u16;
+        if y >= area.bottom() {
+            continue;
+        }
+        let line_in_block =
+            app.layout().line(app.scroll() + row).map_or(1, |line| line.line_in_block);
+        let Some(grid) = app.image_cells(block) else {
+            // Ресурс недоступен: тёмная полоса-заглушка на высоти пиксельной строки.
+            for x in area.x..area.right() {
+                let buffer_cell = &mut frame.buffer_mut()[(x, y)];
+                buffer_cell.set_symbol("·");
+                buffer_cell.set_style(Style::new().fg(app.colors().dim));
+            }
+            continue;
+        };
+        let Some(line_cells) = grid.get(line_in_block.saturating_sub(1)) else {
+            continue;
+        };
+        for (offset, cell) in line_cells.iter().enumerate() {
+            let x = area.x + offset as u16;
+            if x >= area.right() {
+                break;
+            }
+            let buffer_cell = &mut frame.buffer_mut()[(x, y)];
+            buffer_cell.set_symbol("▀");
+            let style = Style::new().fg(cell_color(cell.top)).bg(cell_color(cell.bottom));
+            buffer_cell.set_style(style);
+        }
+    }
+}
+
+/// `media::CellColor → ratatui::Color`.
+fn cell_color(color: crate::media::CellColor) -> Color {
+    match color {
+        crate::media::CellColor::Reset => Color::Reset,
+        crate::media::CellColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
 }
 

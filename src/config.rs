@@ -22,6 +22,8 @@ pub enum ConfigError {
     Encode { path: PathBuf, source: toml::ser::Error },
     #[error("{path}: неизвестный цвет «{value}» — имя (yellow, darkgray…) или #rrggbb")]
     Color { path: PathBuf, value: String },
+    #[error("defaults.images: неизвестный режим «{0}» — half, auto, kitty, sixel или off")]
+    ImagesMode(String),
     #[error("неизвестный пресет «{0}»: доступны btop, mono, light")]
     Preset(String),
     #[error("путь к конфигу не задан ($XDG_CONFIG_HOME)")]
@@ -256,6 +258,39 @@ pub struct Defaults {
     pub column_extra: i16,
     /// Гасить ли текст у нижнего края.
     pub fade_text: bool,
+    /// Режим картинок: `half` (полублоки в тексте), `off` и заготовки
+    /// `kitty`/`sixel`/`auto` (все системы пока рисуют полублоками).
+    pub images: ImagesMode,
+}
+
+/// Режим отрисовки картинок. Пока реализованы `half` и `off`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImagesMode {
+    /// Полублочный даунскейл прямо в тексте — работает в любом терминале.
+    #[default]
+    Half,
+    /// Только alt-текст.
+    Off,
+}
+
+impl Serialize for ImagesMode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let text = match self {
+            Self::Half => "half",
+            Self::Off => "off",
+        };
+        serializer.serialize_str(text)
+    }
+}
+
+impl ImagesMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "half" | "auto" | "kitty" | "sixel" => Some(Self::Half),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Defaults {
@@ -267,6 +302,7 @@ impl Default for Defaults {
             commands: true,
             column_extra: 0,
             fade_text: true,
+            images: ImagesMode::default(),
         }
     }
 }
@@ -312,6 +348,7 @@ struct DefaultsPatch {
     commands: Option<bool>,
     column_extra: Option<i16>,
     fade_text: Option<bool>,
+    images: Option<String>,
 }
 
 /// Полная запись конфига для `save()`: все поля, цвета строками.
@@ -435,6 +472,11 @@ impl ConfigFile {
         }
         if let Some(value) = self.defaults.fade_text {
             defaults.fade_text = value;
+        }
+        if let Some(value) = self.defaults.images.as_deref() {
+            let mode = ImagesMode::parse(value)
+                .ok_or_else(|| ConfigError::ImagesMode(value.to_owned()))?;
+            defaults.images = mode;
         }
         Ok(config)
     }
