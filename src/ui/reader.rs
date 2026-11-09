@@ -774,6 +774,21 @@ fn render_slot(app: &App, frame: &mut Frame, y: u16, x: u16, width: u16) {
         Some(Line::from(spans))
     } else if let Some(hint) = app.pick_hint() {
         Some(Line::from(action_hints(hint)))
+    } else if let Some(job) = app.translate_progress().filter(|job| job.finished.is_none()) {
+        // Живая задача перевода: панель прогресса вместо тостов.
+        let gauge_slots = 20;
+        let filled = gauge_slots * job.done / job.total.max(1);
+        let line = vec![
+            Span::raw("  "),
+            Span::styled(format!("перевод → {} ", job.lang), Style::new().fg(app.colors().accent)),
+            Span::styled("▰".repeat(filled), Style::new().fg(app.colors().rule)),
+            Span::styled("▱".repeat(gauge_slots - filled), Style::new().fg(app.colors().dim)),
+            Span::styled(
+                format!(" {}/{} юнитов", job.done, job.total),
+                Style::new().fg(app.colors().dim),
+            ),
+        ];
+        Some(Line::from(line))
     } else {
         app.notice()
             .map(|notice| Line::from(Span::styled(notice, Style::new().fg(app.colors().notice))))

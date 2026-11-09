@@ -261,6 +261,8 @@ pub struct Defaults {
     /// Режим картинок: `half` (полублоки в тексте), `off` и заготовки
     /// `kitty`/`sixel`/`auto` (все системы пока рисуют полублоками).
     pub images: ImagesMode,
+    /// Адрес сервера перевода (`:translate`); без значения — localhost:5000.
+    pub server: Option<String>,
 }
 
 /// Режим отрисовки картинок. Пока реализованы `half` и `off`.
@@ -303,6 +305,7 @@ impl Default for Defaults {
             column_extra: 0,
             fade_text: true,
             images: ImagesMode::default(),
+            server: None,
         }
     }
 }
@@ -349,6 +352,7 @@ struct DefaultsPatch {
     column_extra: Option<i16>,
     fade_text: Option<bool>,
     images: Option<String>,
+    server: Option<String>,
 }
 
 /// Полная запись конфига для `save()`: все поля, цвета строками.
@@ -477,6 +481,9 @@ impl ConfigFile {
             let mode = ImagesMode::parse(value)
                 .ok_or_else(|| ConfigError::ImagesMode(value.to_owned()))?;
             defaults.images = mode;
+        }
+        if let Some(value) = self.defaults.server {
+            defaults.server = Some(value);
         }
         Ok(config)
     }

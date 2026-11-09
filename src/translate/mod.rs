@@ -14,7 +14,7 @@ use xhtml::{DocKind, Unit, find_units};
 
 pub use epub::Stats;
 pub use journal::Journal;
-use libretranslate::LibreTranslate;
+pub use libretranslate::LibreTranslate;
 
 use crate::store::{Store, TranslateJobSpec};
 
@@ -241,7 +241,7 @@ pub fn check(args: &crate::cli::TranslateArgs) -> anyhow::Result<()> {
 }
 
 /// `book.epub` + `ru` -> `book.ru.epub` рядом с исходником.
-fn sidecar(source: &Path, lang: &str) -> PathBuf {
+pub fn sidecar(source: &Path, lang: &str) -> PathBuf {
     let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("book");
     source.with_file_name(format!("{stem}.{lang}.epub"))
 }

@@ -1,7 +1,11 @@
 //! Состояние читалки: варианты, позиция, навигация, переключение языка, прогресс.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
+
+#[cfg(feature = "translate")]
+use crate::translate::Engine;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -171,6 +175,23 @@ struct Variant {
     alignment: Option<Alignment>,
 }
 
+/// Снимок прогресса фоновой задачи перевода, читаемый из тиков.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TranslateSnapshot {
+    pub lang: String,
+    /// Сколько юнитов готово.
+    pub done: usize,
+    /// Сколько всего юнитов.
+    pub total: usize,
+    /// Задача кончилась: Ok(число переведённых документов) — иначе сообщение об ошибке.
+    pub finished: Option<Result<usize, String>>,
+}
+
+struct TranslateJob {
+    progress: Arc<Mutex<TranslateSnapshot>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
 impl Variant {
     fn loaded(lang: &str, doc: Document) -> Self {
         Self { lang: lang.to_owned(), path: None, doc: Some(doc), alignment: None }
@@ -194,6 +215,10 @@ pub struct App {
     height: u16,
     store: Option<Store>,
     book_id: Option<i64>,
+    /// Файл открытой книги: в него идёт rescan сайдкаров после перевода.
+    book_path: Option<PathBuf>,
+    /// Фоновая задача перевода: прогресс и тосты по тикам.
+    translate_job: Option<TranslateJob>,
     /// Картинки книги: декод и полублочные ячейки с LRU-кэшем.
     media: Media,
     /// Ресурсы контейнера (EPUB): байты картинок по пути ресурса.
@@ -381,6 +406,8 @@ impl App {
             height: DEFAULT_HEIGHT,
             store,
             book_id,
+            book_path: Some(path.to_path_buf()),
+            translate_job: None,
             media: Media::new(CACHE_CAP_BYTES),
             resources: None,
             resources_path: None,
@@ -454,6 +481,8 @@ impl App {
             height: DEFAULT_HEIGHT,
             store,
             book_id: None,
+            book_path: None,
+            translate_job: None,
             media: Media::new(CACHE_CAP_BYTES),
             resources: None,
             resources_path: None,
@@ -1388,6 +1417,7 @@ impl App {
             "lang" => self.command_lang(arg),
             "goto" => self.command_goto(arg),
             "open" => self.command_open(arg),
+            "translate" => self.command_translate(arg),
             "toc" => {
                 self.toggle_toc();
                 Some(format!(": главы {}", if self.show_toc { "вкл" } else { "выкл" }))
@@ -1693,6 +1723,156 @@ impl App {
         }
     }
 
+    /// Выполнить команду минуя строку ввода (тесты и консоль).
+    /// Ведущее `:` срезается: `run_command(":lang en")` ≡ `run_command("lang en")`.
+    pub fn run_command(&mut self, command: &str) -> Option<String> {
+        self.handle_command(command.trim_start_matches(':'))
+    }
+
+    /// `:translate <lang> [server]` — фоновой перевод книги в сайдкар.
+    fn command_translate(&mut self, arg: &str) -> Option<String> {
+        if arg.is_empty() {
+            return Some(": нужен язык: :translate ru".to_owned());
+        }
+        let (lang, explicit) =
+            arg.split_once(' ').map_or((arg, None), |(l, s)| (l, Some(s.trim())));
+        let server = explicit
+            .map(str::to_owned)
+            .or_else(|| self.config.defaults.server.clone())
+            .unwrap_or_else(|| "http://localhost:5000".to_owned());
+        match self.start_translate(lang, &server) {
+            Ok(()) => Some(format!(": перевод → {lang} ({server})")),
+            Err(problem) => Some(format!(": {problem}")),
+        }
+    }
+
+    /// Запуск фоновой задачи перевода со стандартным движком.
+    #[cfg(feature = "translate")]
+    fn start_translate(&mut self, lang: &str, server: &str) -> Result<(), String> {
+        let engine: Arc<dyn Engine + Send + Sync> =
+            Arc::new(crate::translate::LibreTranslate::new(server.to_owned()));
+        self.start_translate_with(lang, engine)
+    }
+
+    /// Пуск фоновой задачи: поток переводит в сайдкар, прогресс тикается.
+    #[cfg(feature = "translate")]
+    pub fn start_translate_with(
+        &mut self,
+        lang: &str,
+        engine: Arc<dyn Engine + Send + Sync>,
+    ) -> Result<(), String> {
+        if self.translate_job.is_some() {
+            return Err("перевод уже идёт".to_owned());
+        }
+        let Some(src) = self.book_path.clone() else {
+            return Err("нет файла книги".to_owned());
+        };
+        src.to_str().ok_or("путь к книге не в юникоде")?;
+        if crate::parse::Format::detect(&src) != Some(crate::parse::Format::Epub) {
+            return Err("перевод поддерживает только EPUB".to_owned());
+        }
+        if lang == self.base_lang() {
+            return Err(format!("«{lang}» — исходный язык книги"));
+        }
+        let store = self
+            .store
+            .as_ref()
+            .ok_or("нет открытого хранилища")?
+            .reopen()
+            .map_err(|e| e.to_string())?;
+        let from = self.base_lang().to_owned();
+        let to = lang.to_owned();
+        let sidecar = crate::translate::sidecar(&src, &to);
+        let spec = crate::store::TranslateJobSpec {
+            src_path: src.display().to_string(),
+            src_hash: crate::translate::journal::source_fingerprint(&src),
+            dst_path: sidecar.display().to_string(),
+            from_lang: from.clone(),
+            to_lang: to.clone(),
+            engine: "libretranslate".to_owned(),
+            base_url: "tui".to_owned(),
+        };
+        let progress: Arc<Mutex<TranslateSnapshot>> = Arc::new(Mutex::new(TranslateSnapshot {
+            lang: to.clone(),
+            ..TranslateSnapshot::default()
+        }));
+        let shared = Arc::clone(&progress);
+        let thread = std::thread::spawn(move || {
+            let mut tick_progress = |done: usize, total: usize| {
+                if let Ok(mut snapshot) = shared.lock() {
+                    snapshot.done = done;
+                    snapshot.total = total;
+                }
+            };
+            let mut task = crate::translate::task::JobTask {
+                source: &src,
+                target: &sidecar,
+                from: &from,
+                to: &to,
+                spec: &spec,
+                jobs: 1,
+                progress: &mut tick_progress,
+            };
+            let outcome =
+                crate::translate::task::translate_journaled(&mut task, engine.as_ref(), &store);
+            if let Ok(mut snapshot) = shared.lock() {
+                snapshot.finished = Some(outcome.map(|s| s.documents).map_err(|f| f.to_string()));
+            }
+        });
+        self.translate_job = Some(TranslateJob { progress, thread: Some(thread) });
+        Ok(())
+    }
+
+    /// Прогресс фоновой задачи (клон снимка): для панели UI и тестов.
+    pub fn translate_progress(&self) -> Option<TranslateSnapshot> {
+        let job = self.translate_job.as_ref()?;
+        job.progress.lock().ok().map(|snapshot| snapshot.clone())
+    }
+
+    /// Пересобрать сайдкары книги: свежепереведённый `book.<lang>.epub`
+    /// появляется как ленивый вариант.
+    fn rescan_variants(&mut self) {
+        let Some(path) = self.book_path.clone() else { return };
+        let base_lang = self.base_lang().to_owned();
+        for (lang, file) in find_sidecars(&path) {
+            if lang == base_lang {
+                continue;
+            }
+            match self.variants.iter_mut().find(|variant| variant.lang == lang) {
+                Some(variant) => {
+                    if variant.path.is_some() && variant.path != Some(file.clone()) {
+                        *variant = Variant::deferred(&lang, file);
+                    }
+                }
+                None => self.variants.push(Variant::deferred(&lang, file)),
+            }
+        }
+    }
+
+    /// Тик фоновой задачи: тост по завершении, rescan сайдкаров и дожим потока.
+    fn poll_translate(&mut self) {
+        let finished = self
+            .translate_job
+            .as_ref()
+            .and_then(|job| job.progress.lock().ok())
+            .and_then(|snapshot| snapshot.finished.clone());
+        // Сколько документов переведено.
+        let Some(outcome) = finished else { return };
+        match outcome {
+            Ok(documents) => {
+                self.set_notice(format!(": перевод завершён ({documents} документов)"));
+                self.rescan_variants();
+            }
+            Err(problem) => self.set_notice(format!(": перевод не удался: {problem}")),
+        }
+        let job = self.translate_job.take();
+        if let Some(job) = job
+            && let Some(thread) = job.thread
+        {
+            let _ = thread.join();
+        }
+    }
+
     fn register_book(&mut self, path: &Path) -> Result<(), String> {
         let lang = lang_from_filename(path)
             .or_else(|| parse::detect_lang(path))
@@ -1955,6 +2135,7 @@ impl App {
                 self.notice = None;
             }
         }
+        self.poll_translate();
         if self.last_save.elapsed() >= SAVE_INTERVAL {
             self.save_progress()?;
         }

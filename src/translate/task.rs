@@ -122,7 +122,7 @@ pub struct JobTask<'a> {
 /// Записывает целевой сайдкар только после полного успеха.
 pub fn translate_journaled(
     task: &mut JobTask,
-    engine: &(impl Engine + Sync),
+    engine: &(impl Engine + Sync + ?Sized),
     store: &Store,
 ) -> Result<Stats, TranslateError> {
     let JobTask { source, target, from, to, spec, jobs, progress } = task;
@@ -289,10 +289,10 @@ fn assemble(
 }
 
 /// Перевод одного юнита: полноценный rebuild или фолбэк по частям.
-fn accumulate(
+fn accumulate<E: Engine + ?Sized>(
     unit: &Unit,
     result: &str,
-    engine: &dyn Engine,
+    engine: &E,
     from: &str,
     to: &str,
 ) -> Result<String, TranslateError> {
