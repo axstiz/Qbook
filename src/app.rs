@@ -1739,19 +1739,36 @@ impl App {
         let server = explicit
             .map(str::to_owned)
             .or_else(|| self.config.defaults.server.clone())
-            .unwrap_or_else(|| "http://localhost:5000".to_owned());
+            .unwrap_or_else(|| match self.engine_name() {
+                "ollama" => "http://localhost:11434".to_owned(),
+                _ => "http://localhost:5000".to_owned(),
+            });
         match self.start_translate(lang, &server) {
             Ok(()) => Some(format!(": перевод → {lang} ({server})")),
             Err(problem) => Some(format!(": {problem}")),
         }
     }
 
-    /// Запуск фоновой задачи перевода со стандартным движком.
+    /// Запуск фоновой задачи перевода с движком из конфига.
     #[cfg(feature = "translate")]
     fn start_translate(&mut self, lang: &str, server: &str) -> Result<(), String> {
-        let engine: Arc<dyn Engine + Send + Sync> =
-            Arc::new(crate::translate::LibreTranslate::new(server.to_owned()));
+        let engine: Arc<dyn Engine + Send + Sync> = match self.engine_name() {
+            "ollama" => Arc::new(crate::translate::Ollama::new(
+                server,
+                self.config.defaults.model.clone().unwrap_or_else(|| "llama3".to_owned()),
+            )),
+            _ => Arc::new(crate::translate::LibreTranslate::new(server.to_owned())),
+        };
         self.start_translate_with(lang, engine)
+    }
+
+    /// Движок из конфига: `libre` по умолчанию.
+    #[cfg(feature = "translate")]
+    fn engine_name(&self) -> &'static str {
+        match self.config.defaults.engine.as_deref() {
+            Some("ollama") => "ollama",
+            _ => "libre",
+        }
     }
 
     /// Пуск фоновой задачи: поток переводит в сайдкар, прогресс тикается.

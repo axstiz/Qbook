@@ -24,6 +24,8 @@ pub enum ConfigError {
     Color { path: PathBuf, value: String },
     #[error("defaults.images: неизвестный режим «{0}» — half, auto, kitty, sixel или off")]
     ImagesMode(String),
+    #[error("defaults.engine: неизвестный движок «{0}» — libre или ollama")]
+    Engine(String),
     #[error("неизвестный пресет «{0}»: доступны btop, mono, light")]
     Preset(String),
     #[error("путь к конфигу не задан ($XDG_CONFIG_HOME)")]
@@ -261,8 +263,12 @@ pub struct Defaults {
     /// Режим картинок: `half` (полублоки в тексте), `off` и заготовки
     /// `kitty`/`sixel`/`auto` (все системы пока рисуют полублоками).
     pub images: ImagesMode,
-    /// Адрес сервера перевода (`:translate`); без значения — localhost:5000.
+    /// Адрес сервера перевода (`:translate`); без значения — по движку.
     pub server: Option<String>,
+    /// Движок перевода для `:translate`: `libre` или `ollama`.
+    pub engine: Option<String>,
+    /// Модель для OpenAI-совместимого движка (`llama3` по умолчанию).
+    pub model: Option<String>,
 }
 
 /// Режим отрисовки картинок. Пока реализованы `half` и `off`.
@@ -306,6 +312,8 @@ impl Default for Defaults {
             fade_text: true,
             images: ImagesMode::default(),
             server: None,
+            engine: None,
+            model: None,
         }
     }
 }
@@ -353,6 +361,8 @@ struct DefaultsPatch {
     fade_text: Option<bool>,
     images: Option<String>,
     server: Option<String>,
+    engine: Option<String>,
+    model: Option<String>,
 }
 
 /// Полная запись конфига для `save()`: все поля, цвета строками.
@@ -485,6 +495,15 @@ impl ConfigFile {
         if let Some(value) = self.defaults.server {
             defaults.server = Some(value);
         }
+        if let Some(value) = self.defaults.engine {
+            if value != "libre" && value != "ollama" {
+                return Err(ConfigError::Engine(value));
+            }
+            defaults.engine = Some(value);
+        }
+        if let Some(value) = self.defaults.model {
+            defaults.model = Some(value);
+        }
         Ok(config)
     }
 }
@@ -584,6 +603,30 @@ mod tests {
         let err = preset_theme("neon").expect_err("пресета нет");
         assert!(err.to_string().contains("neon"));
         assert_eq!(preset_theme("mono").expect("mono"), Theme::mono());
+    }
+
+    #[test]
+    fn engine_and_model_come_from_defaults() {
+        let dir = tempfile::tempdir().expect("каталог");
+        let path = write(
+            &dir,
+            "[defaults]\nengine = \"ollama\"\nmodel = \"llama3.1\"\nserver = \"http://192.168.1.10:11434\"\n",
+        );
+        let config = load_from(&path, Config::default(), true).expect("конфиг");
+        assert_eq!(config.defaults.engine.as_deref(), Some("ollama"));
+        assert_eq!(config.defaults.model.as_deref(), Some("llama3.1"));
+        assert_eq!(config.defaults.server.as_deref(), Some("http://192.168.1.10:11434"));
+    }
+
+    #[test]
+    fn unknown_engine_is_an_error() {
+        let dir = tempfile::tempdir().expect("каталог");
+        let path = write(&dir, "[defaults]\nengine = \"deep\"\n");
+        let error = load_from(&path, Config::default(), true).expect_err("ошибка движка");
+        let ConfigError::Engine(value) = error else {
+            panic!("ожидалась ошибка движка: {error}");
+        };
+        assert_eq!(value, "deep");
     }
 
     #[test]

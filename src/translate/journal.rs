@@ -173,11 +173,23 @@ fn unsanitize(name: &str) -> String {
     name.replace("__", "/")
 }
 
-/// Проверка окружения `--check`: сервер LibreTranslate отвечает.
-pub fn server_ok(url: &str) -> Result<(), String> {
+/// Проверка окружения `--check`: сервер выбранного движка отвечает.
+pub fn server_ok(url: &str, engine: &str) -> Result<(), String> {
     let transport = super::libretranslate::UreqTransport;
-    let endpoint = format!("{}/translate", url.trim_end_matches('/'));
-    let body = json!({ "q": [], "source": "en", "target": "ru", "format": "text" });
+    let (endpoint, body) = match engine {
+        "ollama" => (
+            format!("{}/v1/chat/completions", url.trim_end_matches('/')),
+            json!({
+                "model": "qbook-ping",
+                "stream": false,
+                "messages": [{ "role": "user", "content": "ping" }]
+            }),
+        ),
+        _ => (
+            format!("{}/translate", url.trim_end_matches('/')),
+            json!({ "q": [], "source": "en", "target": "ru", "format": "text" }),
+        ),
+    };
     super::libretranslate::Transport::post_json(&transport, &endpoint, &body)
         .map(|_| ())
         .map_err(|problem| format!("{url}: {problem}"))

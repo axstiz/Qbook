@@ -47,9 +47,18 @@ pub struct TranslateArgs {
     #[arg(long)]
     pub from: Option<String>,
 
-    /// Адрес локального сервера LibreTranslate.
-    #[arg(long, default_value = "http://localhost:5000")]
-    pub server: String,
+    /// Адрес сервера перевода; по умолчанию зависит от `--engine`
+    /// (libre — localhost:5000, ollama — localhost:11434).
+    #[arg(long)]
+    pub server: Option<String>,
+
+    /// Движок перевода: `libre` (LibreTranslate) или `ollama` (OpenAI-совместимый).
+    #[arg(long, default_value = "libre")]
+    pub engine: String,
+
+    /// Модель для OpenAI-совместимого движка (по умолчанию `llama3`).
+    #[arg(long)]
+    pub model: Option<String>,
 
     /// Имя выходного файла (по умолчанию `book.<lang>.epub` рядом с исходным).
     #[arg(long)]
@@ -70,6 +79,25 @@ pub struct TranslateArgs {
     /// Юнитов в одном запросе к серверу.
     #[arg(long, default_value_t = 32)]
     pub batch: usize,
+}
+
+impl TranslateArgs {
+    /// Название движка для журнала: только `libre` или `ollama`.
+    pub fn engine_name(&self) -> Result<&'static str, String> {
+        match self.engine.as_str() {
+            "libre" => Ok("libre"),
+            "ollama" => Ok("ollama"),
+            other => Err(format!("неизвестный движок «{other}», доступны: libre, ollama")),
+        }
+    }
+
+    /// Адрес сервера: явный флаг или дефолт по движку.
+    pub fn resolved_server(&self) -> String {
+        self.server.clone().unwrap_or_else(|| match self.engine.as_str() {
+            "ollama" => "http://localhost:11434".to_owned(),
+            _ => "http://localhost:5000".to_owned(),
+        })
+    }
 }
 
 fn parse_preset(raw: &str) -> Result<String, String> {
@@ -150,8 +178,43 @@ mod tests {
         assert_eq!(args.path, Path::new("book.epub"));
         assert_eq!(args.to, "ru");
         assert_eq!(args.from, None);
-        assert_eq!(args.server, "http://localhost:5000");
+        assert_eq!(args.resolved_server(), "http://localhost:5000");
         assert_eq!(args.output, None);
+    }
+
+    #[test]
+    fn engine_flags_and_defaults() {
+        let cli = Cli::try_parse_from(["qbook", "translate", "b.epub", "ru"]).expect("разобрать");
+        let Some(Command::Translate(args)) = cli.command else { panic!("translate") };
+        assert_eq!(args.engine_name().unwrap(), "libre");
+        assert_eq!(args.resolved_server(), "http://localhost:5000");
+
+        let cli = Cli::try_parse_from([
+            "qbook",
+            "translate",
+            "b.epub",
+            "ru",
+            "--engine",
+            "ollama",
+            "--model",
+            "llama3.1",
+            "--jobs",
+            "2",
+        ])
+        .expect("разобрать");
+        let Some(Command::Translate(args)) = cli.command else { panic!("translate") };
+        assert_eq!(args.engine_name().unwrap(), "ollama");
+        assert_eq!(args.resolved_server(), "http://localhost:11434");
+        assert_eq!(args.model.as_deref(), Some("llama3.1"));
+        assert_eq!(args.jobs, 2);
+    }
+
+    #[test]
+    fn unknown_engine_is_rejected() {
+        let cli = Cli::try_parse_from(["qbook", "translate", "b.epub", "ru", "--engine", "чужой"])
+            .expect("разобрать");
+        let Some(Command::Translate(args)) = cli.command else { panic!("translate") };
+        assert!(args.engine_name().is_err());
     }
 
     #[test]
@@ -173,7 +236,7 @@ mod tests {
             panic!("ожидалась подкоманда translate");
         };
         assert_eq!(args.from.as_deref(), Some("en"));
-        assert_eq!(args.server, "http://127.0.0.1:5000");
+        assert_eq!(args.resolved_server(), "http://127.0.0.1:5000");
         assert_eq!(args.output.as_deref(), Some(Path::new("out.epub")));
     }
 

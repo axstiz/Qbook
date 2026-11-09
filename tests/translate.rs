@@ -272,7 +272,7 @@ fn fake_server() -> (String, thread::JoinHandle<()>) {
 #[test]
 fn server_ok_hits_a_local_endpoint() {
     let (url, server) = fake_server();
-    server_ok(&url).expect("локальный сервер отвечает");
+    server_ok(&url, "libre").expect("локальный сервер отвечает");
     server.join().unwrap();
 }
 
@@ -282,7 +282,7 @@ fn server_ok_reports_a_dead_endpoint() {
     let dead = listener.local_addr().unwrap();
     drop(listener);
     let url = format!("http://{dead}");
-    server_ok(&url).expect_err("мёртвый сервер");
+    server_ok(&url, "libre").expect_err("мёртвый сервер");
 }
 
 #[test]

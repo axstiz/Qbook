@@ -3,6 +3,7 @@
 pub mod epub;
 pub mod journal;
 pub mod libretranslate;
+pub mod ollama;
 pub mod task;
 pub mod xhtml;
 
@@ -15,6 +16,7 @@ use xhtml::{DocKind, Unit, find_units};
 pub use epub::Stats;
 pub use journal::Journal;
 pub use libretranslate::LibreTranslate;
+pub use ollama::Ollama;
 
 use crate::store::{Store, TranslateJobSpec};
 
@@ -144,6 +146,8 @@ pub fn run(args: &crate::cli::TranslateArgs) -> anyhow::Result<Stats> {
     }
 
     let target = args.output.clone().unwrap_or_else(|| sidecar(&source, &args.to));
+    let server = args.resolved_server();
+    let engine_name = args.engine_name().map_err(|e| anyhow::anyhow!("{e}"))?;
     let store = Store::open_default().map_err(|problem| anyhow::anyhow!("{problem}"))?;
     let spec = TranslateJobSpec {
         src_path: source.display().to_string(),
@@ -151,11 +155,11 @@ pub fn run(args: &crate::cli::TranslateArgs) -> anyhow::Result<Stats> {
         dst_path: target.display().to_string(),
         from_lang: from.clone(),
         to_lang: args.to.clone(),
-        engine: ENGINE_NAME.to_owned(),
-        base_url: args.server.clone(),
+        engine: engine_name.to_owned(),
+        base_url: server.clone(),
     };
 
-    let engine = LibreTranslate::new(args.server.clone()).batch_size(args.batch);
+    let engine = build_engine(args, &server)?;
     let resumed = store
         .find_translate_job(
             &spec.src_hash,
@@ -188,7 +192,7 @@ pub fn run(args: &crate::cli::TranslateArgs) -> anyhow::Result<Stats> {
         jobs: args.jobs,
         progress: &mut progress,
     };
-    let stats = task::translate_journaled(&mut task, &engine, &store)?;
+    let stats = task::translate_journaled(&mut task, engine.as_ref(), &store)?;
     writeln!(stderr, "\x1b[K\r")?;
     if resumed {
         println!("продолжаю необработанный перевод, задача лежит в журнале");
@@ -211,13 +215,27 @@ fn resolve_source_language(source: &Path, from_flag: &Option<String>) -> anyhow:
     }
 }
 
-/// Название движка в журнале задач.
-const ENGINE_NAME: &str = "libretranslate";
+/// Движок по имени и адресу сервера.
+fn build_engine(
+    args: &crate::cli::TranslateArgs,
+    server: &str,
+) -> anyhow::Result<Box<dyn Engine + Send + Sync>> {
+    let engine = match args.engine_name().map_err(|e| anyhow::anyhow!("{e}"))? {
+        "ollama" => Box::new(ollama::Ollama::new(
+            server,
+            args.model.clone().unwrap_or_else(|| "llama3".to_owned()),
+        )) as Box<dyn Engine + Send + Sync>,
+        _ => Box::new(LibreTranslate::new(server.to_owned())) as Box<dyn Engine + Send + Sync>,
+    };
+    Ok(engine)
+}
 
 /// `--check`: заглядывает в книгу, определяет язык и стучится на сервер.
 /// Каждый шаг печатается; при любой неудаче — ошибка выхода.
 pub fn check(args: &crate::cli::TranslateArgs) -> anyhow::Result<()> {
     let mut problems = Vec::new();
+    let server = args.resolved_server();
+    let engine_name = args.engine_name().map_err(|e| anyhow::anyhow!("{e}"))?;
     match task::estimate(&args.path, args.batch) {
         Ok(plan) => println!("✓ книга: {} юнитов в {} документах", plan.units, plan.documents),
         Err(problem) => problems.push(format!("✗ книга: {problem}")),
@@ -226,9 +244,9 @@ pub fn check(args: &crate::cli::TranslateArgs) -> anyhow::Result<()> {
         Ok(from) => println!("✓ язык исходника: {from}"),
         Err(problem) => problems.push(format!("✗ язык исходника: {problem}")),
     }
-    match journal::server_ok(&args.server) {
-        Ok(()) => println!("✓ сервер: {}", args.server),
-        Err(problem) => problems.push(format!("✗ сервер: {problem}")),
+    match journal::server_ok(&server, engine_name) {
+        Ok(()) => println!("✓ {engine_name}: {server}"),
+        Err(problem) => problems.push(format!("✗ {engine_name}: {server} — {problem}")),
     }
     if problems.is_empty() {
         Ok(())
