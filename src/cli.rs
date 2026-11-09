@@ -54,6 +54,22 @@ pub struct TranslateArgs {
     /// Имя выходного файла (по умолчанию `book.<lang>.epub` рядом с исходным).
     #[arg(long)]
     pub output: Option<PathBuf>,
+
+    /// Только проверка окружения: книга, язык, сервер.
+    #[arg(long)]
+    pub check: bool,
+
+    /// План перевода: документы и юниты, без обращения к серверу.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Документов в параллели.
+    #[arg(long, default_value_t = 1)]
+    pub jobs: usize,
+
+    /// Юнитов в одном запросе к серверу.
+    #[arg(long, default_value_t = 32)]
+    pub batch: usize,
 }
 
 fn parse_preset(raw: &str) -> Result<String, String> {
@@ -159,6 +175,42 @@ mod tests {
         assert_eq!(args.from.as_deref(), Some("en"));
         assert_eq!(args.server, "http://127.0.0.1:5000");
         assert_eq!(args.output.as_deref(), Some(Path::new("out.epub")));
+    }
+
+    #[test]
+    fn translate_journal_options_have_defaults() {
+        let cli =
+            Cli::try_parse_from(["qbook", "translate", "book.epub", "ru"]).expect("разобрать");
+        let Some(Command::Translate(args)) = cli.command else {
+            panic!("ожидалась подкоманда translate");
+        };
+        assert!(!args.check);
+        assert!(!args.dry_run);
+        assert_eq!(args.jobs, 1);
+        assert_eq!(args.batch, 32);
+    }
+
+    #[test]
+    fn translate_job_size_flags_are_parsed() {
+        let cli = Cli::try_parse_from([
+            "qbook",
+            "translate",
+            "book.epub",
+            "ru",
+            "--dry-run",
+            "--jobs",
+            "3",
+            "--batch",
+            "8",
+        ])
+        .expect("разобрать");
+        let Some(Command::Translate(args)) = cli.command else {
+            panic!("ожидалась подкоманда translate");
+        };
+        assert!(args.dry_run);
+        assert!(!args.check);
+        assert_eq!(args.jobs, 3);
+        assert_eq!(args.batch, 8);
     }
 
     #[test]

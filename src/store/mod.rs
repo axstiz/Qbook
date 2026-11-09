@@ -213,6 +213,11 @@ impl Store {
         Ok(self.conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
     }
 
+    /// Каталог хранилища — рядом живут черновики задач перевода.
+    pub fn dir(&self) -> &Path {
+        self.path.parent().unwrap_or(Path::new("."))
+    }
+
     /// Добавить книгу. Повторное обращение к тому же пути возвращает прежний id.
     pub fn add_book(
         &self,

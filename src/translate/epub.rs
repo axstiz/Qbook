@@ -17,7 +17,7 @@ pub struct Stats {
     pub documents: usize,
 }
 
-/// Переводит `source` в `target`, меняя только текстовые узлы контент-документов.
+/// Линейный перевод без журнала: остаётся тестам и простому пути.
 pub fn translate_epub(
     source: &Path,
     target: &Path,
@@ -64,14 +64,14 @@ pub fn translate_epub(
     Ok(stats)
 }
 
-struct Entry {
-    name: String,
-    data: Vec<u8>,
-    method: CompressionMethod,
-    is_dir: bool,
+pub(crate) struct Entry {
+    pub(crate) name: String,
+    pub(crate) data: Vec<u8>,
+    pub(crate) method: CompressionMethod,
+    pub(crate) is_dir: bool,
 }
 
-fn read_entries<R: Read + std::io::Seek>(
+pub(crate) fn read_entries<R: Read + std::io::Seek>(
     zip: &mut ZipArchive<R>,
     path: &str,
 ) -> Result<Vec<Entry>, TranslateError> {
@@ -94,7 +94,7 @@ fn read_entries<R: Read + std::io::Seek>(
     Ok(entries)
 }
 
-fn write_archive(entries: &[Entry], target: &Path) -> Result<(), TranslateError> {
+pub(crate) fn write_archive(entries: &[Entry], target: &Path) -> Result<(), TranslateError> {
     let shown = target.display().to_string();
     let file = std::fs::File::create(target)
         .map_err(|source| TranslateError::Io { path: shown, source })?;
