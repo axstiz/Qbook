@@ -82,7 +82,13 @@ impl Layout {
         for (block, item) in doc.blocks().iter().enumerate() {
             let start = lines.len();
             let shared = style_ranges(item);
-            let wrapped = wrap(&item.text, cells);
+            // Код и стихи не переносятся: строка шире колонки обрезается
+            // при отрисовке, в модели остаётся целой.
+            let wrapped = if matches!(item.kind, BlockKind::Code | BlockKind::Verse) {
+                wrap_hard(&item.text)
+            } else {
+                wrap(&item.text, cells)
+            };
             let mut gap = false;
             for (line_in_block, range) in wrapped.into_iter().enumerate() {
                 lines.push(LineInfo {
@@ -229,6 +235,22 @@ fn wrap(text: &str, width: usize) -> Vec<Range<usize>> {
             }
             lines.push(range);
         }
+        base = segment_end;
+    }
+    lines
+}
+
+/// Жёсткая раскладка без переноса: по одной строке на каждый сегмент `\n`.
+/// Соглашения совпадают с `wrap`: `\n` входит в предыдущую строку, диапазоны
+/// покрывают текст без разрывов.
+fn wrap_hard(text: &str) -> Vec<Range<usize>> {
+    let mut lines = Vec::new();
+    let segments: Vec<&str> = text.split('\n').collect();
+    let mut base = 0;
+    for (i, segment) in segments.iter().enumerate() {
+        let has_newline = i + 1 < segments.len();
+        let segment_end = base + segment.chars().count() + usize::from(has_newline);
+        lines.push(base..segment_end);
         base = segment_end;
     }
     lines
@@ -568,6 +590,35 @@ mod tests {
         assert_eq!((layout.lines()[0].start_char, layout.lines()[0].end_char), (0, 3));
         assert_eq!((layout.lines()[1].start_char, layout.lines()[1].end_char), (3, 5));
         assert_eq!(layout.lines()[1].line_in_block, 1);
+    }
+
+    #[test]
+    fn code_lines_are_never_wrapped() {
+        let long = "Шаг 1: объявление        Шаг 2: модель решает вызвать";
+        let doc = Document::new(
+            "en",
+            "T",
+            vec![
+                Block::new(BlockKind::Code, format!("{long}\nхвост")),
+                Block::new(BlockKind::Verse, "широкая строка стиха тоже не рвётся"),
+            ],
+        );
+        let layout = Layout::new(&doc, 12);
+        assert_eq!(layout.block_range(0), 0..3, "две строки кода + отступ");
+        let code = &layout.lines()[0];
+        assert_eq!(code.end_char - code.start_char, long.chars().count() + 1, "\\n в строке");
+        let verse = &layout.lines()[3];
+        assert_eq!(
+            verse.end_char - verse.start_char,
+            "широкая строка стиха тоже не рвётся".chars().count()
+        );
+    }
+
+    #[test]
+    fn paragraphs_still_wrap_at_width() {
+        let doc = Document::new("en", "T", vec![Block::new(BlockKind::Paragraph, "один два три")]);
+        let layout = Layout::new(&doc, 5);
+        assert!(layout.block_range(0).len() > 1, "текст переносится");
     }
 
     #[test]

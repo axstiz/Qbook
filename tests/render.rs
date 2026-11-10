@@ -993,3 +993,66 @@ fn shelf_quit_hint_moves_to_corner() {
     assert!(footer.contains("Enter"), "футер Enter: {footer}");
     assert!(!footer.contains("выход"), "выход уехал в угол: {footer}");
 }
+
+/// EPUB с одной текстовой колонкой: `toc`/`bookmarks`/`commands` выключены.
+fn text_only_epub(chapters: &[String]) -> App {
+    let tmp = dir();
+    let path = tmp.path().join("book.epub");
+    common::write_mini_epub(&path, chapters);
+    let config = qbook::config::Config {
+        defaults: qbook::config::Defaults {
+            toc: false,
+            bookmarks: false,
+            commands: false,
+            ..qbook::config::Defaults::default()
+        },
+        ..qbook::config::Config::default()
+    };
+    App::load_auto_with(&path, &[], None, config).expect("загрузка")
+}
+
+#[test]
+fn code_lines_do_not_wrap_and_clip_with_ellipsis() {
+    let long = "Шаг 1: объявление инструментов        Шаг 2: модель решает вызвать";
+    let body = format!("<pre><code>{long}\nШаг 3: результат добавлен в контекст</code></pre>");
+    let mut app = text_only_epub(&[chapter(&body)]);
+    app.set_size(110, 12);
+    let (lines, _) = screen(&mut app, 110, 12);
+
+    let code_row = lines.iter().position(|l| l.contains("Шаг 1")).expect("строка кода");
+    assert!(
+        lines[code_row].contains("Шаг 2"),
+        "левая и правая колонки — в одной строке: {}",
+        lines[code_row]
+    );
+    let next = &lines[code_row + 1];
+    assert!(next.contains("Шаг 3"), "следующая строка — следующая строка кода: {next}");
+    assert!(!next.contains("модель"), "переноса нет: {next}");
+
+    // Заведомо не влезающая строка обрезается с маркером.
+    let huge = format!("<pre><code>{}КОНЕЦ</code></pre>", "х".repeat(120));
+    let mut app = text_only_epub(&[chapter(&huge)]);
+    app.set_size(110, 12);
+    let (lines, _) = screen(&mut app, 110, 12);
+    let row = lines.iter().position(|l| l.contains("хх")).expect("строка кода");
+    assert!(lines[row].contains('…'), "обрезка с маркером: {}", lines[row]);
+    assert!(!lines[row].contains("КОНЕЦ"), "хвост не влез: {}", lines[row]);
+    assert!(!lines[row + 1].contains("КОНЕЦ"), "переноса нет: {}", lines[row + 1]);
+}
+
+#[test]
+fn search_reverses_the_code_line() {
+    let body = "<pre><code>Шаг 3: результат добавлен в контекст</code></pre>";
+    let mut app = text_only_epub(&[chapter(body)]);
+    app.set_size(80, 12);
+    let key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    app.handle_key(key('/'));
+    for c in "результат".chars() {
+        app.handle_key(key(c));
+    }
+    let (lines, buffer) = screen(&mut app, 80, 12);
+    let reversed = (0..12u16).any(|y| {
+        (0..80u16).any(|x| buffer[(x, y)].style().add_modifier.contains(Modifier::REVERSED))
+    });
+    assert!(reversed, "строка кода с совпадением перевёрнута: {lines:?}");
+}

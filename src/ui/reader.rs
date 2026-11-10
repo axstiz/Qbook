@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::{
     App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus, ResizeLimit, SearchMode,
@@ -325,6 +326,7 @@ fn render_text_lines(app: &App, frame: &mut Frame, area: Rect, rule_width: u16) 
     let pick_row = app.pick_row();
     let search_line = app.search_line();
     let mut rule_rows: Vec<usize> = Vec::new();
+    let mut code_rows: Vec<(usize, usize)> = Vec::new();
     let lines: Vec<Line> = app
         .layout()
         .lines()
@@ -334,8 +336,14 @@ fn render_text_lines(app: &App, frame: &mut Frame, area: Rect, rule_width: u16) 
         .take(area.height as usize)
         .enumerate()
         .map(|(row, (index, info))| {
-            if app.document().block(info.block).is_some_and(|b| b.kind == BlockKind::Rule) {
+            let kind = app.document().block(info.block).map(|b| b.kind);
+            if kind == Some(BlockKind::Rule) {
                 rule_rows.push(row);
+                return Line::default();
+            }
+            // Код и стихи рисуются отдельным проходом на всю ширину рамки.
+            if matches!(kind, Some(BlockKind::Code) | Some(BlockKind::Verse)) {
+                code_rows.push((row, index));
                 return Line::default();
             }
             let mut line = text_line(app, info);
@@ -363,6 +371,82 @@ fn render_text_lines(app: &App, frame: &mut Frame, area: Rect, rule_width: u16) 
             cell.set_style(rule_style);
         }
     }
+    paint_code_rows(app, frame, rows_full_width(area, rule_width), &code_rows);
+}
+
+/// Полная внутренняя ширина рамки: код живёт шире «честной колонки».
+fn rows_full_width(area: Rect, rule_width: u16) -> Rect {
+    Rect { x: area.x, y: area.y, width: rule_width.max(area.width), height: area.height }
+}
+
+/// Строки кода и стихов: не переносятся, обрезаются по правому краю с `…`.
+fn paint_code_rows(app: &App, frame: &mut Frame, area: Rect, rows: &[(usize, usize)]) {
+    if rows.is_empty() {
+        return;
+    }
+    let selection = app.selection_range();
+    let pick_row = app.pick_row();
+    let search_line = app.search_line();
+    for &(row, index) in rows {
+        let y = area.y + row as u16;
+        if y >= area.bottom() {
+            continue;
+        }
+        let Some(info) = app.layout().line(index) else { continue };
+        let block = app.document().block(info.block).expect("блок из раскладки");
+        let base_style = decoration(block.kind).2;
+        let mut line = text_line(app, info);
+        if selection.is_some_and(|(top, bottom)| index >= top && index <= bottom) {
+            line.style = Style::new().bg(app.colors().selection_bg);
+        }
+        if search_line == Some(index) && pick_row != Some(index) {
+            line.style = Style::new().add_modifier(Modifier::REVERSED);
+        }
+        if pick_row == Some(index) {
+            line.style = Style::new().add_modifier(Modifier::REVERSED);
+        }
+        let clamped = clamp_line(line, usize::from(area.width), base_style);
+        let row_area = Rect { x: area.x, y, width: area.width, height: 1 };
+        frame.render_widget(Paragraph::new(clamped), row_area);
+    }
+}
+
+/// Усечение строки по ширине в ячейках: хвост заменяется на `…`.
+fn clamp_line(line: Line<'static>, width: usize, ellipsis_style: Style) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+    let width_of = |text: &str| -> usize {
+        text.chars().map(|ch| UnicodeWidthChar::width(ch).unwrap_or(1).max(1)).sum()
+    };
+    let total: usize = line.spans.iter().map(|span| width_of(&span.content)).sum();
+    if total <= width {
+        return line;
+    }
+    let budget = width - 1; // ячейка на «…»
+    let mut used = 0usize;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for span in line.spans {
+        if used >= budget {
+            break;
+        }
+        let mut text = String::new();
+        for ch in span.content.chars() {
+            let w = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+            if used + w > budget {
+                break;
+            }
+            text.push(ch);
+            used += w;
+        }
+        if !text.is_empty() {
+            spans.push(Span::styled(text, span.style));
+        }
+    }
+    spans.push(Span::styled("…", ellipsis_style));
+    let mut out = Line::from(spans);
+    out.style = line.style;
+    out
 }
 
 fn text_line(app: &App, info: &LineInfo) -> Line<'static> {
