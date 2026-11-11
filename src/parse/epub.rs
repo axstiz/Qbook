@@ -1096,11 +1096,32 @@ fn image_dimensions<R: std::io::Read + std::io::Seek>(
     let mut entry = zip.by_name(path).ok()?;
     let mut head = Vec::new();
     (&mut entry).take(64 * 1024).read_to_end(&mut head).ok()?;
+    let svg_size = svg_probe(&mut head, &mut entry);
+    if svg_size.is_some() {
+        return svg_size;
+    }
     image::ImageReader::new(std::io::Cursor::new(&head))
         .with_guessed_format()
         .ok()?
         .into_dimensions()
         .ok()
+}
+
+#[cfg(feature = "svg")]
+fn svg_probe(head: &mut Vec<u8>, entry: &mut impl std::io::Read) -> Option<(u32, u32)> {
+    if !crate::media::svg::is_svg(head) {
+        return None;
+    }
+    // SVG-пробе нужен весь документ: размер живёт в viewBox в любом месте.
+    let mut rest = Vec::new();
+    entry.read_to_end(&mut rest).ok()?;
+    head.extend_from_slice(&rest);
+    crate::media::svg::size(head)
+}
+
+#[cfg(not(feature = "svg"))]
+fn svg_probe(_head: &mut Vec<u8>, _entry: &mut impl std::io::Read) -> Option<(u32, u32)> {
+    None
 }
 
 // --- утилиты ---------------------------------------------------------------

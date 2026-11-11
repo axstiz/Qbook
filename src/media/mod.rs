@@ -3,6 +3,9 @@
 //! Tier 1 (все терминалы): полублок `▀` с fg/bg-цветом — пиксельная пара
 //! сверху/снизу. Кэш декодированных RGBA-картинок ограничен по памяти (LRU).
 
+#[cfg(feature = "svg")]
+pub mod svg;
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -151,8 +154,12 @@ impl Media {
     }
 }
 
-/// Декодирует PNG/JPEG/GIF/WebP байты в RGBA.
+/// Декодирует PNG/JPEG/GIF/WebP (и SVG при feature `svg`) байты в RGBA.
 pub fn decode(bytes: &[u8]) -> Option<ImageData> {
+    #[cfg(feature = "svg")]
+    if svg::is_svg(bytes) {
+        return svg::render(bytes);
+    }
     let image = image::load_from_memory(bytes).ok()?;
     match image {
         DynamicImage::ImageRgba8(rgba) => {

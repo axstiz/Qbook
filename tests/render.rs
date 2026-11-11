@@ -1056,3 +1056,43 @@ fn search_reverses_the_code_line() {
     });
     assert!(reversed, "строка кода с совпадением перевёрнута: {lines:?}");
 }
+
+#[test]
+fn svg_image_renders_as_half_blocks() {
+    let tmp = dir();
+    let book = tmp.path().join("book.epub");
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+<rect x="10" y="10" width="80" height="80" fill="#ff0000"/></svg>"##;
+    let chapter = r##"<html><body><img src="pic.svg" alt="рисунок"/><p>текст</p></body></html>"##;
+    use std::io::Write;
+    let mut zip = zip::write::ZipWriter::new(std::fs::File::create(&book).unwrap());
+    let opts = zip::write::SimpleFileOptions::default();
+    zip.start_file("mimetype", opts).unwrap();
+    zip.write_all(b"application/epub+zip").unwrap();
+    let container = r##"<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"##;
+    zip.start_file("META-INF/container.xml", opts).unwrap();
+    zip.write_all(container.as_bytes()).unwrap();
+    let opf = r##"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title><dc:language>en</dc:language></metadata><manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>"##;
+    zip.start_file("book.opf", opts).unwrap();
+    zip.write_all(opf.as_bytes()).unwrap();
+    zip.start_file("c.xhtml", opts).unwrap();
+    zip.write_all(chapter.as_bytes()).unwrap();
+    zip.start_file("pic.svg", opts).unwrap();
+    zip.write_all(svg.as_bytes()).unwrap();
+    zip.finish().unwrap();
+
+    let mut app = App::load(&book, "en", &[], None).expect("открытие");
+    app.set_size(80, 14);
+    // Размер SVG попал в модель: у Image-блока есть пиксельные строки.
+    let image_block = (0..app.document().len()).position(|i| {
+        app.document().block(i).is_some_and(|b| b.kind == qbook::model::BlockKind::Image)
+    });
+    let image_block = image_block.expect("Image-блок");
+    let has_pixels =
+        app.layout().lines().iter().any(|info| info.block == image_block && info.line_in_block > 0);
+    assert!(has_pixels, "SVG получил размер и высоту в ячейках");
+
+    let (_, buffer) = screen(&mut app, 80, 14);
+    let blocks = (0..14u16).any(|y| (0..80u16).any(|x| buffer[(x, y)].symbol() == "▀"));
+    assert!(blocks, "полублоки отрисованы");
+}
