@@ -62,11 +62,11 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// Раскладка с включёнными картинками (полублоки). Все вызовы, где режим
-    /// не важен, идут через неё.
+    /// Раскладка с включёнными картинками (авто: kitty при поддержке, иначе
+    /// полублоки). Все вызовы, где режим не важен, идут через неё.
     pub fn new(doc: &Document, width: u16) -> Self {
         // Нулевая ширина зациклила бы перенос: рисуем строку в один символ.
-        Self::with_media(doc, width, ImagesMode::Half)
+        Self::with_media(doc, width, ImagesMode::Auto)
     }
 
     /// Раскладка с режимом картинок: `Off` — только alt-текст у Image-блока,
@@ -105,7 +105,7 @@ impl Layout {
             if item.kind == BlockKind::Image
                 && let Some(image) = item.image.as_ref()
                 && let Some((image_w, image_h)) = image.size
-                && images == ImagesMode::Half
+                && images != ImagesMode::Off
             {
                 let rows = media::image_rows_pixels(image_w, image_h, u32::from(width));
                 for index in 1..=rows {

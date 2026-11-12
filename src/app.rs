@@ -222,6 +222,12 @@ pub struct App {
     translate_job: Option<TranslateJob>,
     /// Картинки книги: декод и полублочные ячейки с LRU-кэшем.
     media: Media,
+    /// Переданные kitty-картинки: их id уже ушли терминалу.
+    kitty_sent: std::collections::HashSet<u32>,
+    /// Картинки, замеченные в кадре, но ещё не переданные (resource, cols, rows).
+    kitty_pending: Vec<(u32, String, u32, u32)>,
+    /// Идентификаторы, которые надо удалить из kitty (книга сменилась).
+    kitty_reset: Option<Vec<u32>>,
     /// Ресурсы контейнера (EPUB): байты картинок по пути ресурса.
     resources: Option<ZipResources>,
     /// Путь отрисовки ячеек рассматривается от path: нужен при переключении языка.
@@ -410,6 +416,9 @@ impl App {
             book_path: Some(path.to_path_buf()),
             translate_job: None,
             media: Media::new(CACHE_CAP_BYTES),
+            kitty_sent: std::collections::HashSet::new(),
+            kitty_pending: Vec::new(),
+            kitty_reset: None,
             resources: None,
             resources_path: None,
             pending_anchor: progress.map(|p| p.anchor),
@@ -485,6 +494,9 @@ impl App {
             book_path: None,
             translate_job: None,
             media: Media::new(CACHE_CAP_BYTES),
+            kitty_sent: std::collections::HashSet::new(),
+            kitty_pending: Vec::new(),
+            kitty_reset: None,
             resources: None,
             resources_path: None,
             pending_anchor: None,
@@ -734,7 +746,7 @@ impl App {
         let mode = if self.config.defaults.images == ImagesMode::Off {
             ImagesMode::Off
         } else {
-            ImagesMode::Half
+            ImagesMode::Auto
         };
         self.layout = Layout::with_media(self.document(), self.wrap_width(), mode);
         self.scroll = anchor_to_scroll(&self.layout, self.document(), anchor);
@@ -806,18 +818,117 @@ impl App {
 
     /// Открыть ресурсы контейнера (картинки EPUB): файл-варианта. Кэш ячеек
     /// сбрасывается — картинка своя в каждом варианте.
-    fn reopen_resources(&mut self, path: &Path) {
+    /// Пересборка ресурсов контейнера (EPUB): при смене книги кэш сбрасывается.
+    pub fn reopen_resources(&mut self, path: &Path) {
         let is_epub = parse::Format::detect(path) == Some(parse::Format::Epub);
         let same = self.resources_path.as_deref() == Some(path);
         if is_epub && !same {
             self.resources = ZipResources::open(path);
             self.resources_path = Some(path.to_path_buf());
             self.media.clear();
+            self.forget_kitty_images();
         } else if !is_epub {
             self.resources = None;
             self.resources_path = None;
             self.media.clear();
+            self.forget_kitty_images();
         }
+    }
+
+    /// Картинки книги больше не актуальны: терминалу приказано их удалить.
+    fn forget_kitty_images(&mut self) {
+        if !self.kitty_sent.is_empty() {
+            self.kitty_reset =
+                Some(std::mem::take(&mut self.kitty_sent).into_iter().collect::<Vec<u32>>());
+        }
+        self.kitty_pending.clear();
+    }
+
+    /// Разрешённый режим картинок: `auto` → kitty в kitty, иначе полублоки;
+    /// `kitty` — принудительно (проверка Ghostty/WezTerm).
+    pub fn images_mode(&self) -> ImagesMode {
+        match self.config.defaults.images {
+            ImagesMode::Off => ImagesMode::Off,
+            ImagesMode::Half => ImagesMode::Half,
+            ImagesMode::Kitty => ImagesMode::Kitty,
+            ImagesMode::Auto => {
+                if crate::media::kitty::detected() {
+                    ImagesMode::Kitty
+                } else {
+                    ImagesMode::Half
+                }
+            }
+        }
+    }
+
+    /// Идентификатор картинки блока: от книги и имени ресурса.
+    pub fn image_kitty_id(&self, block: usize) -> Option<u32> {
+        let resource = self.document().block(block)?.image.as_ref()?.resource.clone();
+        let book = self.book_path.as_deref().and_then(|p| p.to_str()).unwrap_or("");
+        Some(crate::media::kitty::image_id(book, &resource))
+    }
+
+    /// Заявка на kitty-картинку из кадра рендера: рисуются placeholder-ячейки,
+    /// передача PNG происходит после кадра (`take_graphics`).
+    pub fn request_kitty_image(&mut self, block: usize, cols: u32, rows: u32) {
+        if cols == 0 || rows == 0 {
+            return;
+        }
+        let Some(id) = self.image_kitty_id(block) else { return };
+        let Some(resource) =
+            self.document().block(block).and_then(|b| b.image.as_ref()).map(|i| i.resource.clone())
+        else {
+            return;
+        };
+        if !self.kitty_sent.contains(&id) && !self.kitty_pending.iter().any(|p| p.0 == id) {
+            self.kitty_pending.push((id, resource, cols, rows));
+        }
+    }
+
+    /// Escape-последовательности после кадра: удаление устаревших картинок и
+    /// передача новых. Пишется в stdout до следующего кадра.
+    pub fn take_graphics(&mut self) -> String {
+        let mut out = String::new();
+        if let Some(ids) = self.kitty_reset.take() {
+            for id in ids {
+                out.push_str(&crate::media::kitty::delete(id));
+            }
+            self.kitty_sent.clear();
+        }
+        if self.images_mode() != ImagesMode::Kitty && !self.kitty_sent.is_empty() {
+            for id in std::mem::take(&mut self.kitty_sent) {
+                out.push_str(&crate::media::kitty::delete(id));
+            }
+        }
+        let pending = std::mem::take(&mut self.kitty_pending);
+        for (id, resource, cols, rows) in pending {
+            if self.kitty_sent.contains(&id) {
+                continue;
+            }
+            let resources = &mut self.resources;
+            let mut source = |name: &str| resources.as_mut().and_then(|res| res.read_bytes(name));
+            let Some(png) = self.media.png(&resource, cols, &mut source).map(<[u8]>::to_vec) else {
+                continue;
+            };
+            out.push_str(&crate::media::kitty::transmit(id, &png, cols, rows));
+            self.kitty_sent.insert(id);
+        }
+        out
+    }
+
+    /// Очистка kitty-картинок на выходе из читалки.
+    pub fn exit_graphics(&mut self) -> String {
+        let mut out = String::new();
+        if let Some(ids) = self.kitty_reset.take() {
+            for id in ids {
+                out.push_str(&crate::media::kitty::delete(id));
+            }
+        }
+        for id in std::mem::take(&mut self.kitty_sent) {
+            out.push_str(&crate::media::kitty::delete(id));
+        }
+        self.kitty_pending.clear();
+        out
     }
 
     /// Ячейки half-block картинки блока (кэш по «ресурс × колонки × строки»).

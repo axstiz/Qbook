@@ -271,12 +271,16 @@ pub struct Defaults {
     pub model: Option<String>,
 }
 
-/// Режим отрисовки картинок. Пока реализованы `half` и `off`.
+/// Режим отрисовки картинок.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImagesMode {
-    /// Полублочный даунскейл прямо в тексте — работает в любом терминале.
+    /// kitty graphics при поддержке терминала, иначе полублоки.
     #[default]
+    Auto,
+    /// Полублочный даунскейл прямо в тексте — работает в любом терминале.
     Half,
+    /// Принудительно kitty graphics (для проверки Ghostty/WezTerm).
+    Kitty,
     /// Только alt-текст.
     Off,
 }
@@ -284,7 +288,9 @@ pub enum ImagesMode {
 impl Serialize for ImagesMode {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let text = match self {
+            Self::Auto => "auto",
             Self::Half => "half",
+            Self::Kitty => "kitty",
             Self::Off => "off",
         };
         serializer.serialize_str(text)
@@ -294,7 +300,9 @@ impl Serialize for ImagesMode {
 impl ImagesMode {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "half" | "auto" | "kitty" | "sixel" => Some(Self::Half),
+            "half" => Some(Self::Half),
+            "kitty" => Some(Self::Kitty),
+            "auto" | "sixel" => Some(Self::Auto),
             "off" => Some(Self::Off),
             _ => None,
         }

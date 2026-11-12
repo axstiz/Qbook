@@ -1058,6 +1058,66 @@ fn search_reverses_the_code_line() {
 }
 
 #[test]
+fn kitty_mode_draws_placeholders_and_sends_png_once() {
+    let tmp = dir();
+    let book = tmp.path().join("book.epub");
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+<rect x="10" y="10" width="80" height="80" fill="#ff0000"/></svg>"##;
+    let chapter = r##"<html><body><img src="pic.svg" alt="рисунок"/><p>текст</p></body></html>"##;
+    let mut zip = zip::write::ZipWriter::new(std::fs::File::create(&book).unwrap());
+    use std::io::Write as _;
+    let opts = zip::write::SimpleFileOptions::default();
+    zip.start_file("mimetype", opts).unwrap();
+    zip.write_all(b"application/epub+zip").unwrap();
+    let container = r##"<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"##;
+    zip.start_file("META-INF/container.xml", opts).unwrap();
+    zip.write_all(container.as_bytes()).unwrap();
+    let opf = r##"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title><dc:language>en</dc:language></metadata><manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>"##;
+    zip.start_file("book.opf", opts).unwrap();
+    zip.write_all(opf.as_bytes()).unwrap();
+    zip.start_file("c.xhtml", opts).unwrap();
+    zip.write_all(chapter.as_bytes()).unwrap();
+    zip.start_file("pic.svg", opts).unwrap();
+    zip.write_all(svg.as_bytes()).unwrap();
+    zip.finish().unwrap();
+
+    let config = qbook::config::Config {
+        defaults: qbook::config::Defaults {
+            images: qbook::config::ImagesMode::Kitty,
+            toc: false,
+            bookmarks: false,
+            commands: false,
+            ..qbook::config::Defaults::default()
+        },
+        ..qbook::config::Config::default()
+    };
+    let mut app = App::load_auto_with(&book, &[], None, config).expect("открытие");
+    app.set_size(80, 14);
+    assert_eq!(app.images_mode(), qbook::config::ImagesMode::Kitty, "kitty форсирован конфигом");
+
+    let (_, buffer) = screen(&mut app, 80, 14);
+    // Placeholder-ячейки: U+10EEEE с диакритиками; fg = id картинки.
+    let placeholders = (0..14u16).any(|y| {
+        (0..80u16).any(|x| {
+            let symbol = buffer[(x, y)].symbol();
+            symbol.starts_with('\u{10EEEE}')
+        })
+    });
+    assert!(placeholders, "placeholder-ячейки в кадре");
+    let first_batch = app.take_graphics();
+    assert!(first_batch.contains("f=100,i="), "первый кадр передаёт PNG: {first_batch:?}");
+    assert!(first_batch.starts_with('\x1b'), "escape-формат");
+    assert!(app.take_graphics().is_empty(), "повторная передача не идёт");
+
+    // После rescan старые картинки удаляются; на выходе — тоже.
+    app.reopen_resources(&tmp.path().join("other.epub"));
+    let cleanup = app.take_graphics();
+    assert!(cleanup.contains("a=d,d=i"), "удаление после rescan: {cleanup:?}");
+    let exit_batch = app.exit_graphics();
+    assert!(exit_batch.is_empty(), "на выходе удалять уже нечего: {exit_batch:?}");
+}
+
+#[test]
 fn svg_image_renders_as_half_blocks() {
     let tmp = dir();
     let book = tmp.path().join("book.epub");
@@ -1081,7 +1141,14 @@ fn svg_image_renders_as_half_blocks() {
     zip.write_all(svg.as_bytes()).unwrap();
     zip.finish().unwrap();
 
-    let mut app = App::load(&book, "en", &[], None).expect("открытие");
+    let config = qbook::config::Config {
+        defaults: qbook::config::Defaults {
+            images: qbook::config::ImagesMode::Half,
+            ..qbook::config::Defaults::default()
+        },
+        ..qbook::config::Config::default()
+    };
+    let mut app = App::load_auto_with(&book, &[], None, config).expect("открытие");
     app.set_size(80, 14);
     // Размер SVG попал в модель: у Image-блока есть пиксельные строки.
     let image_block = (0..app.document().len()).position(|i| {

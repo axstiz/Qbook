@@ -40,8 +40,12 @@ fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app);
+    // Картинки kitty удаляются из терминала на выходе.
+    let exit_cleanup = app.exit_graphics();
     execute!(stdout(), DisableMouseCapture)?;
     ratatui::restore();
+    write!(stdout(), "{exit_cleanup}")?;
+    stdout().flush()?;
 
     let saved = app.save_progress();
     result?;
@@ -54,6 +58,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     app.set_size(width, height);
     loop {
         terminal.draw(|frame| ui::render(app, frame))?;
+        // Передача/удаление kitty-картинок: после кадра, который нарисовал
+        // placeholder-ячейки.
+        let graphics = app.take_graphics();
+        if !graphics.is_empty() {
+            write!(stdout(), "{graphics}")?;
+            stdout().flush()?;
+        }
         if !event::pump(app)? {
             break;
         }

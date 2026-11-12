@@ -2,9 +2,12 @@
 //!
 //! Tier 1 (все терминалы): полублок `▀` с fg/bg-цветом — пиксельная пара
 //! сверху/снизу. Кэш декодированных RGBA-картинок ограничен по памяти (LRU).
+//! Tier 2 (kitty): PNG передаётся терминалу, в тексте — Unicode placeholders.
 
 #[cfg(feature = "svg")]
 pub mod svg;
+
+pub mod kitty;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -57,6 +60,8 @@ pub struct Media {
     /// Порядок LRU: свежий ресурс в хвост, вытеснение — из головы.
     order: std::collections::VecDeque<String>,
     cells: HashMap<(String, u32, u32), Vec<Vec<HalfCell>>>,
+    /// PNG-байты для kitty: «ресурс × колонки» (терминал сам масштабирует).
+    pngs: HashMap<(String, u32), Vec<u8>>,
     cap_bytes: usize,
     used_bytes: usize,
 }
@@ -67,6 +72,7 @@ impl Media {
             images: HashMap::new(),
             order: std::collections::VecDeque::new(),
             cells: HashMap::new(),
+            pngs: HashMap::new(),
             cap_bytes,
             used_bytes: 0,
         }
@@ -116,6 +122,35 @@ impl Media {
         Some(grid.as_slice())
     }
 
+    /// PNG для kitty: «ресурс × колонки». Если исходник уже PNG — передаётся
+    /// как есть (терминал масштабирует сам), иначе RGBA перекодируется в PNG.
+    pub fn png(
+        &mut self,
+        resource: &str,
+        cols: u32,
+        source: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+    ) -> Option<&[u8]> {
+        let key = (resource.to_owned(), cols);
+        if !self.pngs.contains_key(&key) {
+            let bytes = source(resource)?;
+            let png = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+                bytes
+            } else {
+                let image = decode(&bytes)?;
+                let mut out = Vec::new();
+                image::DynamicImage::ImageRgba8(image.rgba)
+                    .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                    .ok()?;
+                self.used_bytes += out.len();
+                out
+            };
+            self.pngs.insert(key.clone(), png);
+            self.land(resource);
+        }
+        self.touch(resource);
+        self.pngs.get(&key).map(Vec::as_slice)
+    }
+
     /// Регистрирует свежий ресурс и гоняет вытеснение.
     fn land(&mut self, resource: &str) {
         self.touch(resource);
@@ -143,6 +178,13 @@ impl Media {
             for key in keys {
                 self.cells.remove(&key);
             }
+            let pngs: Vec<(String, u32)> =
+                self.pngs.keys().filter(|(res, _)| res == &oldest).cloned().collect();
+            for key in pngs {
+                self.used_bytes =
+                    self.used_bytes.saturating_sub(self.pngs.get(&key).map_or(0, Vec::len));
+                self.pngs.remove(&key);
+            }
         }
     }
 
@@ -150,6 +192,7 @@ impl Media {
         self.images.clear();
         self.order.clear();
         self.cells.clear();
+        self.pngs.clear();
         self.used_bytes = 0;
     }
 }

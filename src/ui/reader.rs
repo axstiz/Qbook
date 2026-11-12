@@ -14,7 +14,7 @@ use crate::app::{
     App, COMMANDS, InputPurpose, LEFT_W, MIN_CENTER, RIGHT_W, ReaderFocus, ResizeLimit, SearchMode,
     TEXT_INDENT, WIN_PAD,
 };
-use crate::config::Theme;
+use crate::config::{ImagesMode, Theme};
 use crate::keys::{Group, corner_hints, current_bindings};
 use crate::model::{BlockKind, LineInfo};
 use crate::ui::{btop_gauge, note_color, render_corner};
@@ -264,14 +264,18 @@ fn paint_image_rows(app: &mut App, frame: &mut Frame, area: Rect) {
                 .then_some((index - app.scroll(), info.block))
         })
         .collect();
-    for (row, block) in rows {
-        let y = area.y + row as u16;
+    if app.images_mode() == ImagesMode::Kitty {
+        paint_image_rows_kitty(app, frame, area, &rows);
+        return;
+    }
+    for (row, block) in rows.iter() {
+        let y = area.y + *row as u16;
         if y >= area.bottom() {
             continue;
         }
         let line_in_block =
             app.layout().line(app.scroll() + row).map_or(1, |line| line.line_in_block);
-        let Some(grid) = app.image_cells(block) else {
+        let Some(grid) = app.image_cells(*block) else {
             // Ресурс недоступен: тёмная полоса-заглушка на высоти пиксельной строки.
             for x in area.x..area.right() {
                 let buffer_cell = &mut frame.buffer_mut()[(x, y)];
@@ -293,6 +297,51 @@ fn paint_image_rows(app: &mut App, frame: &mut Frame, area: Rect) {
             let style = Style::new().fg(cell_color(cell.top)).bg(cell_color(cell.bottom));
             buffer_cell.set_style(style);
         }
+    }
+}
+
+/// kitty-вариант: ячейки `U+10EEEE` + диакритики, id в цвете переднего плана.
+/// Передача PNG делается после кадра (`App::take_graphics`).
+fn paint_image_rows_kitty(app: &mut App, frame: &mut Frame, area: Rect, rows: &[(usize, usize)]) {
+    let mut blocks: Vec<usize> = rows.iter().map(|(_, block)| *block).collect();
+    blocks.sort_unstable();
+    blocks.dedup();
+    for block in blocks {
+        // Полная высота картинки в ячейках (и невидимые строки — для placement).
+        let total = app.layout().block_range(block).len().saturating_sub(1) as u32;
+        app.request_kitty_image(block, u32::from(area.width), total);
+    }
+    for (row, block) in rows.iter() {
+        let y = area.y + *row as u16;
+        if y >= area.bottom() {
+            continue;
+        }
+        let line_in_block =
+            app.layout().line(app.scroll() + row).map_or(1, |line| line.line_in_block);
+        let Some(id) = app.image_kitty_id(*block) else {
+            paint_placeholder_bar(app, frame, area, y);
+            continue;
+        };
+        let (r, g, b) = crate::media::kitty::id_color(id);
+        for offset in 0..area.width {
+            let Some(symbol) =
+                crate::media::kitty::placeholder(line_in_block as u32 - 1, u32::from(offset))
+            else {
+                break;
+            };
+            let buffer_cell = &mut frame.buffer_mut()[(area.x + offset, y)];
+            buffer_cell.set_symbol(&symbol);
+            buffer_cell.set_style(Style::new().fg(Color::Rgb(r, g, b)));
+        }
+    }
+}
+
+/// Полоса-заглушка вместо неопознанной картинки.
+fn paint_placeholder_bar(app: &App, frame: &mut Frame, area: Rect, y: u16) {
+    for x in area.x..area.right() {
+        let buffer_cell = &mut frame.buffer_mut()[(x, y)];
+        buffer_cell.set_symbol("·");
+        buffer_cell.set_style(Style::new().fg(app.colors().dim));
     }
 }
 
